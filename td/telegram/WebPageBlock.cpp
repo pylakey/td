@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2024
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -2489,6 +2489,21 @@ vector<td_api::object_ptr<td_api::PageBlock>> get_page_blocks_object(
   context.is_first_pass_ = false;
   context.anchors_.emplace(Slice(), nullptr);  // back to top
   return get_page_blocks_object(page_blocks, &context);
+}
+
+bool WebPageBlock::are_allowed_album_block_types(const vector<unique_ptr<WebPageBlock>> &page_blocks) {
+  for (const auto &block : page_blocks) {
+    switch (block->get_type()) {
+      case Type::Title:
+      case Type::AuthorDate:
+      case Type::Collage:
+      case Type::Slideshow:
+        continue;
+      default:
+        return false;
+    }
+  }
+  return true;
 }
 
 }  // namespace td

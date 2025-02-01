@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2024
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -13,6 +13,7 @@
 #include "td/telegram/DialogManager.h"
 #include "td/telegram/Global.h"
 #include "td/telegram/MessageFullId.h"
+#include "td/telegram/MessageQueryManager.h"
 #include "td/telegram/MessagesManager.h"
 #include "td/telegram/OptionManager.h"
 #include "td/telegram/ServerMessageId.h"
@@ -789,22 +790,23 @@ bool SavedMessagesManager::set_pinned_saved_messages_topics(vector<SavedMessages
       ++old_it;
       continue;
     }
-    set_saved_messages_topic_is_pinned(saved_messages_topic_id, true);
+    set_saved_messages_topic_is_pinned(saved_messages_topic_id, true, "set_pinned_saved_messages_topics 1");
   }
   for (auto saved_messages_topic_id : old_pinned_saved_messages_topic_ids) {
-    set_saved_messages_topic_is_pinned(saved_messages_topic_id, false);
+    set_saved_messages_topic_is_pinned(saved_messages_topic_id, false, "set_pinned_saved_messages_topics 2");
   }
   return true;
 }
 
 bool SavedMessagesManager::set_saved_messages_topic_is_pinned(SavedMessagesTopicId saved_messages_topic_id,
-                                                              bool is_pinned) {
-  return set_saved_messages_topic_is_pinned(get_topic(saved_messages_topic_id), is_pinned);
+                                                              bool is_pinned, const char *source) {
+  return set_saved_messages_topic_is_pinned(get_topic(saved_messages_topic_id), is_pinned, source);
 }
 
-bool SavedMessagesManager::set_saved_messages_topic_is_pinned(SavedMessagesTopic *topic, bool is_pinned) {
+bool SavedMessagesManager::set_saved_messages_topic_is_pinned(SavedMessagesTopic *topic, bool is_pinned,
+                                                              const char *source) {
   CHECK(!td_->auth_manager_->is_bot());
-  CHECK(topic != nullptr);
+  LOG_CHECK(topic != nullptr) << source;
   if (!topic_list_.are_pinned_saved_messages_topics_inited_) {
     return false;
   }
@@ -825,9 +827,9 @@ bool SavedMessagesManager::set_saved_messages_topic_is_pinned(SavedMessagesTopic
     topic->pinned_order_ = 0;
   }
 
-  LOG(INFO) << "Set " << saved_messages_topic_id << " pinned order to " << topic->pinned_order_;
+  LOG(INFO) << "Set " << saved_messages_topic_id << " pinned order to " << topic->pinned_order_ << " from " << source;
   topic->is_changed_ = true;
-  on_topic_changed(topic, "set_saved_messages_topic_is_pinned");
+  on_topic_changed(topic, source);
   return true;
 }
 
@@ -934,13 +936,13 @@ void SavedMessagesManager::delete_saved_messages_topic_history(SavedMessagesTopi
                                                                Promise<Unit> &&promise) {
   TRY_STATUS_PROMISE(promise, saved_messages_topic_id.is_valid_status(td_));
 
-  MessagesManager::AffectedHistoryQuery query = [td = td_, saved_messages_topic_id](
-                                                    DialogId, Promise<AffectedHistory> &&query_promise) {
+  MessageQueryManager::AffectedHistoryQuery query = [td = td_, saved_messages_topic_id](
+                                                        DialogId, Promise<AffectedHistory> &&query_promise) {
     td->create_handler<DeleteSavedHistoryQuery>(std::move(query_promise))->send(saved_messages_topic_id);
   };
   auto my_dialog_id = td_->dialog_manager_->get_my_dialog_id();
-  td_->messages_manager_->run_affected_history_query_until_complete(my_dialog_id, std::move(query), true,
-                                                                    std::move(promise));
+  td_->message_query_manager_->run_affected_history_query_until_complete(my_dialog_id, std::move(query), true,
+                                                                         std::move(promise));
 }
 
 void SavedMessagesManager::get_saved_messages_topic_message_by_date(
@@ -964,14 +966,14 @@ void SavedMessagesManager::delete_saved_messages_topic_messages_by_date(SavedMes
     return promise.set_value(Unit());
   }
 
-  MessagesManager::AffectedHistoryQuery query = [td = td_, saved_messages_topic_id, min_date, max_date](
-                                                    DialogId, Promise<AffectedHistory> &&query_promise) {
+  MessageQueryManager::AffectedHistoryQuery query = [td = td_, saved_messages_topic_id, min_date, max_date](
+                                                        DialogId, Promise<AffectedHistory> &&query_promise) {
     td->create_handler<DeleteSavedMessagesByDateQuery>(std::move(query_promise))
         ->send(saved_messages_topic_id, min_date, max_date);
   };
   auto my_dialog_id = td_->dialog_manager_->get_my_dialog_id();
-  td_->messages_manager_->run_affected_history_query_until_complete(my_dialog_id, std::move(query), true,
-                                                                    std::move(promise));
+  td_->message_query_manager_->run_affected_history_query_until_complete(my_dialog_id, std::move(query), true,
+                                                                         std::move(promise));
 }
 
 int32 SavedMessagesManager::get_pinned_saved_messages_topic_limit() const {
@@ -985,7 +987,8 @@ void SavedMessagesManager::toggle_saved_messages_topic_is_pinned(SavedMessagesTo
   if (!topic_list_.are_pinned_saved_messages_topics_inited_) {
     return promise.set_error(Status::Error(400, "Pinned Saved Messages topics must be loaded first"));
   }
-  if (get_topic(saved_messages_topic_id) == nullptr) {
+  auto *topic = get_topic(saved_messages_topic_id);
+  if (topic == nullptr) {
     return promise.set_error(Status::Error(400, "Can't find Saved Messages topic"));
   }
   if (is_pinned && !td::contains(topic_list_.pinned_saved_messages_topic_ids_, saved_messages_topic_id) &&
@@ -993,7 +996,7 @@ void SavedMessagesManager::toggle_saved_messages_topic_is_pinned(SavedMessagesTo
           topic_list_.pinned_saved_messages_topic_ids_.size()) {
     return promise.set_error(Status::Error(400, "The maximum number of pinned chats exceeded"));
   }
-  if (!set_saved_messages_topic_is_pinned(saved_messages_topic_id, is_pinned)) {
+  if (!set_saved_messages_topic_is_pinned(topic, is_pinned, "toggle_saved_messages_topic_is_pinned")) {
     return promise.set_value(Unit());
   }
   td_->create_handler<ToggleSavedDialogPinQuery>(std::move(promise))->send(saved_messages_topic_id, is_pinned);

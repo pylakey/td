@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2024
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -298,7 +298,7 @@ class TdReceiver {
   unique_ptr<TdCallback> create_callback(ClientManager::ClientId client_id) {
     class Callback final : public TdCallback {
      public:
-      explicit Callback(ClientManager::ClientId client_id, std::shared_ptr<OutputQueue> output_queue)
+      Callback(ClientManager::ClientId client_id, std::shared_ptr<OutputQueue> output_queue)
           : client_id_(client_id), output_queue_(std::move(output_queue)) {
       }
       void on_result(uint64 id, td_api::object_ptr<td_api::Object> result) final {

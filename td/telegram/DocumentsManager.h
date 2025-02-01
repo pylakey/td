@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2024
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -19,6 +19,7 @@
 
 #include "td/utils/buffer.h"
 #include "td/utils/common.h"
+#include "td/utils/Slice.h"
 #include "td/utils/WaitFreeHashMap.h"
 
 #include <utility>
@@ -84,7 +85,7 @@ class DocumentsManager {
 
   enum class Subtype : int32 { Background, Pattern, Ringtone, Story, Other };
 
-  Document on_get_document(RemoteDocument remote_document, DialogId owner_dialog_id,
+  Document on_get_document(RemoteDocument remote_document, DialogId owner_dialog_id, bool is_self_destructing,
                            MultiPromiseActor *load_data_multipromise_ptr = nullptr,
                            Document::Type default_document_type = Document::Type::General,
                            Subtype document_subtype = Subtype::Other);
@@ -92,19 +93,21 @@ class DocumentsManager {
   void create_document(FileId file_id, string minithumbnail, PhotoSize thumbnail, string file_name, string mime_type,
                        bool replace);
 
-  bool has_input_media(FileId file_id, FileId thumbnail_file_id, bool is_secret) const;
-
   SecretInputMedia get_secret_input_media(FileId document_file_id,
-                                          tl_object_ptr<telegram_api::InputEncryptedFile> input_file,
+                                          telegram_api::object_ptr<telegram_api::InputEncryptedFile> input_file,
                                           const string &caption, BufferSlice thumbnail, int32 layer) const;
 
-  tl_object_ptr<telegram_api::InputMedia> get_input_media(FileId file_id,
-                                                          tl_object_ptr<telegram_api::InputFile> input_file,
-                                                          tl_object_ptr<telegram_api::InputFile> input_thumbnail) const;
+  tl_object_ptr<telegram_api::InputMedia> get_input_media(
+      FileId file_id, telegram_api::object_ptr<telegram_api::InputFile> input_file,
+      telegram_api::object_ptr<telegram_api::InputFile> input_thumbnail) const;
 
   FileId get_document_thumbnail_file_id(FileId file_id) const;
 
   void delete_document_thumbnail(FileId file_id);
+
+  Slice get_document_file_name(FileId file_id) const;
+
+  Slice get_document_mime_type(FileId file_id) const;
 
   FileId dup_document(FileId new_id, FileId old_id);
 

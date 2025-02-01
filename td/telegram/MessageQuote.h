@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2024
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -27,8 +27,6 @@ class MessageQuote {
   friend bool operator==(const MessageQuote &lhs, const MessageQuote &rhs);
 
   friend StringBuilder &operator<<(StringBuilder &string_builder, const MessageQuote &quote);
-
-  static void remove_unallowed_quote_entities(FormattedText &text);
 
  public:
   MessageQuote() = default;
@@ -65,9 +63,11 @@ class MessageQuote {
 
   void update_input_reply_to_message(Td *td, telegram_api::inputReplyToMessage *input_reply_to_message) const;
 
-  td_api::object_ptr<td_api::inputTextQuote> get_input_text_quote_object() const;
+  td_api::object_ptr<td_api::inputTextQuote> get_input_text_quote_object(const UserManager *user_manager) const;
 
-  td_api::object_ptr<td_api::textQuote> get_text_quote_object() const;
+  td_api::object_ptr<td_api::textQuote> get_text_quote_object(const UserManager *user_manager) const;
+
+  static void remove_unallowed_quote_entities(FormattedText &text);
 
   template <class StorerT>
   void store(StorerT &storer) const;

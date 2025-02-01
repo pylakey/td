@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2024
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -42,7 +42,7 @@ class MediaArea {
     void parse(ParserT &parser);
   };
 
-  enum class Type : int32 { None, Location, Venue, Reaction, Message, Url };
+  enum class Type : int32 { None, Location, Venue, Reaction, Message, Url, Weather, StarGift };
   Type type_ = Type::None;
   MediaAreaCoordinates coordinates_;
   Location location_;
@@ -53,6 +53,8 @@ class MediaArea {
   string input_result_id_;
   ReactionType reaction_type_;
   string url_;
+  double temperature_ = 0.0;
+  int32 color_ = 0;
   bool is_dark_ = false;
   bool is_flipped_ = false;
   bool is_old_message_ = false;

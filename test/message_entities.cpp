@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2024
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -29,7 +29,7 @@ static void check_mention(const td::string &str, const td::vector<td::string> &e
     result.push_back(it.str());
   }
   if (result != expected) {
-    LOG(FATAL) << td::tag("text", str) << td::tag("got", td::format::as_array(result))
+    LOG(FATAL) << td::tag("text", str) << td::tag("receive", td::format::as_array(result))
                << td::tag("expected", td::format::as_array(expected));
   }
 }
@@ -60,7 +60,7 @@ static void check_bot_command(const td::string &str, const td::vector<td::string
     result.push_back(it.str());
   }
   if (result != expected) {
-    LOG(FATAL) << td::tag("text", str) << td::tag("got", td::format::as_array(result))
+    LOG(FATAL) << td::tag("text", str) << td::tag("receive", td::format::as_array(result))
                << td::tag("expected", td::format::as_array(expected));
   }
 }
@@ -84,7 +84,7 @@ static void check_hashtag(const td::string &str, const td::vector<td::string> &e
     result.push_back(it.str());
   }
   if (result != expected) {
-    LOG(FATAL) << td::tag("text", str) << td::tag("got", td::format::as_array(result))
+    LOG(FATAL) << td::tag("text", str) << td::tag("receive", td::format::as_array(result))
                << td::tag("expected", td::format::as_array(expected));
   }
 }
@@ -112,6 +112,13 @@ TEST(MessageEntities, hashtag) {
   check_hashtag(" #" + td::string(255, '1') + "a" + td::string(255, 'b') + "# ", {});
   check_hashtag("#a#b #c #d", {"#c", "#d"});
   check_hashtag("#test", {"#test"});
+  check_hashtag("#test@", {"#test"});
+  check_hashtag("#test@a", {"#test"});
+  check_hashtag("#test@ab", {"#test"});
+  check_hashtag("#test@abc", {"#test@abc"});
+  check_hashtag("#test@a-c", {"#test"});
+  check_hashtag("#test@abcdefghijabcdefghijabcdefghijab", {"#test@abcdefghijabcdefghijabcdefghijab"});
+  check_hashtag("#test@abcdefghijabcdefghijabcdefghijabc", {"#test@abcdefghijabcdefghijabcdefghijab"});
   check_hashtag("#te·st", {"#te·st"});
   check_hashtag(u8"\U0001F604\U0001F604\U0001F604\U0001F604 \U0001F604\U0001F604\U0001F604#" + td::string(200, '1') +
                     "ООО" + td::string(200, '2'),
@@ -119,6 +126,13 @@ TEST(MessageEntities, hashtag) {
   check_hashtag(u8"#a\u2122", {"#a"});
   check_hashtag("#a൹", {"#a"});
   check_hashtag("#aඁං෴ก฿", {"#aඁං෴ก"});
+  check_hashtag(
+      "#a12345678901234561234567890123456123456789012345612345678901234561234567890123456123456789012345612345678901234"
+      "5612345678901234561234567890123456123456789012345612345678901234561234567890123456123456789012345612345678901234"
+      "5612345678901234561234567890123456",
+      {"#a1234567890123456123456789012345612345678901234561234567890123456123456789012345612345678901234561234567890123"
+       "456123456789012345612345678901234561234567890123456123456789012345612345678901234561234567890123456123456789012"
+       "34561234567890123456123456789012345"});
 }
 
 static void check_cashtag(const td::string &str, const td::vector<td::string> &expected) {
@@ -128,7 +142,7 @@ static void check_cashtag(const td::string &str, const td::vector<td::string> &e
     result.push_back(it.str());
   }
   if (result != expected) {
-    LOG(FATAL) << td::tag("text", str) << td::tag("got", td::format::as_array(result))
+    LOG(FATAL) << td::tag("text", str) << td::tag("receive", td::format::as_array(result))
                << td::tag("expected", td::format::as_array(expected));
   }
 }
@@ -169,6 +183,13 @@ TEST(MessageEntities, cashtag) {
   check_cashtag(" А$ABC ", {});
   check_cashtag("$ABC$DEF $GHI $KLM", {"$GHI", "$KLM"});
   check_cashtag("$TEST", {"$TEST"});
+  check_cashtag("$TEST@", {"$TEST"});
+  check_cashtag("$TEST@a", {"$TEST"});
+  check_cashtag("$TEST@ab", {"$TEST"});
+  check_cashtag("$TEST@abc", {"$TEST@abc"});
+  check_cashtag("$TEST@a-c", {"$TEST"});
+  check_cashtag("$TEST@abcdefghijabcdefghijabcdefghijab", {"$TEST@abcdefghijabcdefghijabcdefghijab"});
+  check_cashtag("$TEST@abcdefghijabcdefghijabcdefghijabc", {"$TEST"});
   check_cashtag("$1INC", {});
   check_cashtag("$1INCH", {"$1INCH"});
   check_cashtag("...$1INCH...", {"$1INCH"});
@@ -190,7 +211,7 @@ static void check_media_timestamp(const td::string &str, const td::vector<std::p
   auto result = td::transform(td::find_media_timestamps(str),
                               [](auto &&entity) { return std::make_pair(entity.first.str(), entity.second); });
   if (result != expected) {
-    LOG(FATAL) << td::tag("text", str) << td::tag("got", td::format::as_array(result))
+    LOG(FATAL) << td::tag("text", str) << td::tag("receive", td::format::as_array(result))
                << td::tag("expected", td::format::as_array(expected));
   }
 }
@@ -235,7 +256,7 @@ static void check_bank_card_number(const td::string &str, const td::vector<td::s
     result.push_back(it.str());
   }
   if (result != expected) {
-    LOG(FATAL) << td::tag("text", str) << td::tag("got", td::format::as_array(result))
+    LOG(FATAL) << td::tag("text", str) << td::tag("receive", td::format::as_array(result))
                << td::tag("expected", td::format::as_array(expected));
   }
 }
@@ -284,7 +305,7 @@ static void check_tg_url(const td::string &str, const td::vector<td::string> &ex
     result.push_back(it.str());
   }
   if (result != expected) {
-    LOG(FATAL) << td::tag("text", str) << td::tag("got", td::format::as_array(result))
+    LOG(FATAL) << td::tag("text", str) << td::tag("receive", td::format::as_array(result))
                << td::tag("expected", td::format::as_array(expected));
   }
 }
@@ -464,11 +485,11 @@ static void check_url(const td::string &str, const td::vector<td::string> &expec
     }
   }
   if (result_urls != expected_urls) {
-    LOG(FATAL) << td::tag("text", str) << td::tag("got", td::format::as_array(result_urls))
+    LOG(FATAL) << td::tag("text", str) << td::tag("receive", td::format::as_array(result_urls))
                << td::tag("expected", td::format::as_array(expected_urls));
   }
   if (result_email_addresses != expected_email_addresses) {
-    LOG(FATAL) << td::tag("text", str) << td::tag("got", td::format::as_array(result_email_addresses))
+    LOG(FATAL) << td::tag("text", str) << td::tag("receive", td::format::as_array(result_email_addresses))
                << td::tag("expected", td::format::as_array(expected_email_addresses));
   }
 }
@@ -501,6 +522,10 @@ TEST(MessageEntities, url) {
   check_url("ftp://telegram.org", {"ftp://telegram.org"});
   check_url("ftps://telegram.org", {});
   check_url("sftp://telegram.org", {});
+  check_url("tonsite://telegram.ton", {"tonsite://telegram.ton"});
+  check_url("telegram.ton", {"telegram.ton"});
+  check_url("telegram.onion", {"telegram.onion"});
+  check_url("telegram.tonsite", {});
   check_url("hTtPs://telegram.org", {"hTtPs://telegram.org"});
   check_url("HTTP://telegram.org", {"HTTP://telegram.org"});
   check_url("аHTTP://telegram.org", {"HTTP://telegram.org"});
@@ -1197,11 +1222,19 @@ TEST(MessageEntities, fix_formatted_text) {
 
   check_fix_formatted_text(
       "\xe2\x80\x8f\xe2\x80\x8f  \xe2\x80\x8e\xe2\x80\x8e\xe2\x80\x8e\xe2\x80\x8c \xe2\x80\x8f\xe2\x80\x8e "
-      "\xe2\x80\x8f",
+      "\xe2\x80\x8f a",
       {},
       "\xe2\x80\x8c\xe2\x80\x8f  \xe2\x80\x8c\xe2\x80\x8c\xe2\x80\x8e\xe2\x80\x8c \xe2\x80\x8c\xe2\x80\x8e "
-      "\xe2\x80\x8f",
+      "\xe2\x80\x8f a",
       {});
+  check_fix_formatted_text(
+      "\xe2\x80\x8f\xe2\x80\x8f  \xe2\x80\x8e\xe2\x80\x8e\xe2\x80\x8e\xe2\x80\x8c \xe2\x80\x8f\xe2\x80\x8e "
+      "\xe2\x80\x8f",
+      {}, false, false, false, true);
+  check_fix_formatted_text(
+      "\xe2\x80\x8f\xe2\x80\x8f  \xe2\x80\x8e\xe2\x80\x8e\xe2\x80\x8e\xe2\x80\x8c \xe2\x80\x8f\xe2\x80\x8e "
+      "\xe2\x80\x8f",
+      {}, "", {});
 }
 
 TEST(MessageEntities, is_visible_url) {

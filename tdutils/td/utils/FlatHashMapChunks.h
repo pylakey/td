@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2024
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -399,13 +399,16 @@ class FlatHashTableChunks {
   }
 
   template <class F>
-  void remove_if(F &&f) {
+  bool remove_if(F &&f) {
+    bool is_removed = false;
     for (auto it = nodes_.begin(), end = nodes_.end(); it != end; ++it) {
       if (!it->empty() && f(it->get_public())) {
         erase_node(it);
+        is_removed = true;
       }
     }
     try_shrink();
+    return is_removed;
   }
 
  private:
@@ -568,8 +571,8 @@ template <class KeyT, class HashT = Hash<KeyT>, class EqT = std::equal_to<KeyT>>
 using FlatHashSetChunks = FlatHashTableChunks<SetNode<KeyT, EqT>, HashT, EqT>;
 
 template <class NodeT, class HashT, class EqT, class FuncT>
-void table_remove_if(FlatHashTableChunks<NodeT, HashT, EqT> &table, FuncT &&func) {
-  table.remove_if(func);
+bool table_remove_if(FlatHashTableChunks<NodeT, HashT, EqT> &table, FuncT &&func) {
+  return table.remove_if(func);
 }
 
 }  // namespace td

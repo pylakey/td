@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2024
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -117,7 +117,7 @@ namespace mtproto {
  *         BadMsgNotification;
  *
  *  error codes:
- *   16: msg_id is too low. -- lite resend. It will be automatially packed in a container. I hope.
+ *   16: msg_id is too low. -- lite resend. It will be automatically packed in a container. I hope.
  *   17: msg_id is too high. -- fail connection.
  *   18: msg_id % 4 != 0. -- Error and fail connection.
  *   19: container msg_id is the same as msg_id of a previously received message. MUST NEVER HAPPENS. Error and fail
@@ -428,7 +428,8 @@ Status SessionConnection::on_packet(const MsgInfo &info, const mtproto_api::pong
   auto get_time = [](int64 msg_id) {
     return static_cast<double>(msg_id) / (static_cast<uint64>(1) << 32);
   };
-  return callback_->on_pong(get_time(pong.ping_id_), get_time(pong.msg_id_));
+  return callback_->on_pong(get_time(pong.ping_id_), get_time(pong.msg_id_),
+                            auth_data_->get_server_time(Time::now_cached()));
 }
 
 Status SessionConnection::on_packet(const MsgInfo &info, const mtproto_api::future_salts &salts) {
@@ -808,8 +809,8 @@ void SessionConnection::send_crypto(const Storer &storer, uint64 quick_ack_token
                                                    auth_data_->get_auth_key(), quick_ack_token);
 }
 
-Result<MessageId> SessionConnection::send_query(BufferSlice buffer, bool gzip_flag, MessageId message_id,
-                                                vector<MessageId> invoke_after_message_ids, bool use_quick_ack) {
+MessageId SessionConnection::send_query(BufferSlice buffer, bool gzip_flag, MessageId message_id,
+                                        vector<MessageId> invoke_after_message_ids, bool use_quick_ack) {
   CHECK(mode_ != Mode::HttpLongPoll);  // "LongPoll connection is only for http_wait"
   if (message_id == MessageId()) {
     message_id = auth_data_->next_message_id(Time::now_cached());
@@ -823,7 +824,6 @@ Result<MessageId> SessionConnection::send_query(BufferSlice buffer, bool gzip_fl
   VLOG(mtproto) << "Invoke query with " << message_id << " and seq_no " << seq_no << " of size "
                 << to_send_.back().packet.size() << " after " << invoke_after_message_ids
                 << (use_quick_ack ? " with quick ack" : "");
-
   return message_id;
 }
 
@@ -914,8 +914,8 @@ void SessionConnection::flush_packet() {
   MessageId container_message_id;
   int64 ping_id = 0;
   if (has_salt && may_ping()) {
-    ping_id = ++cur_ping_id_;
     last_ping_at_ = Time::now_cached();
+    ping_id = auth_data_->next_message_id(last_ping_at_).get();
   }
 
   // http_wait

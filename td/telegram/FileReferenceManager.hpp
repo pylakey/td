@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2024
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -9,6 +9,7 @@
 #include "td/telegram/AnimationsManager.h"
 #include "td/telegram/AttachMenuManager.h"
 #include "td/telegram/BackgroundManager.h"
+#include "td/telegram/BotInfoManager.h"
 #include "td/telegram/ChannelId.h"
 #include "td/telegram/ChatId.h"
 #include "td/telegram/ChatManager.h"
@@ -19,12 +20,14 @@
 #include "td/telegram/NotificationSettingsManager.h"
 #include "td/telegram/QuickReplyManager.h"
 #include "td/telegram/QuickReplyMessageFullId.h"
+#include "td/telegram/StarManager.h"
 #include "td/telegram/StickersManager.h"
 #include "td/telegram/StoryFullId.h"
 #include "td/telegram/StoryManager.h"
 #include "td/telegram/Td.h"
 #include "td/telegram/UserId.h"
 #include "td/telegram/UserManager.h"
+#include "td/telegram/WebAppManager.h"
 #include "td/telegram/WebPagesManager.h"
 
 #include "td/utils/common.h"
@@ -39,34 +42,43 @@ void FileReferenceManager::store_file_source(FileSourceId file_source_id, Storer
   CHECK(index < file_sources_.size());
   auto &source = file_sources_[index];
   td::store(source.get_offset(), storer);
-  source.visit(
-      overloaded([&](const FileSourceMessage &source) { td::store(source.message_full_id, storer); },
-                 [&](const FileSourceUserPhoto &source) {
-                   td::store(source.user_id, storer);
-                   td::store(source.photo_id, storer);
-                 },
-                 [&](const FileSourceChatPhoto &source) { td::store(source.chat_id, storer); },
-                 [&](const FileSourceChannelPhoto &source) { td::store(source.channel_id, storer); },
-                 [&](const FileSourceWallpapers &source) {},
-                 [&](const FileSourceWebPage &source) { td::store(source.url, storer); },
-                 [&](const FileSourceSavedAnimations &source) {},
-                 [&](const FileSourceRecentStickers &source) { td::store(source.is_attached, storer); },
-                 [&](const FileSourceFavoriteStickers &source) {},
-                 [&](const FileSourceBackground &source) {
-                   td::store(source.background_id, storer);
-                   td::store(source.access_hash, storer);
-                 },
-                 [&](const FileSourceChatFull &source) { td::store(source.chat_id, storer); },
-                 [&](const FileSourceChannelFull &source) { td::store(source.channel_id, storer); },
-                 [&](const FileSourceAppConfig &source) {}, [&](const FileSourceSavedRingtones &source) {},
-                 [&](const FileSourceUserFull &source) { td::store(source.user_id, storer); },
-                 [&](const FileSourceAttachMenuBot &source) { td::store(source.user_id, storer); },
-                 [&](const FileSourceWebApp &source) {
-                   td::store(source.user_id, storer);
-                   td::store(source.short_name, storer);
-                 },
-                 [&](const FileSourceStory &source) { td::store(source.story_full_id, storer); },
-                 [&](const FileSourceQuickReplyMessage &source) { td::store(source.message_full_id, storer); }));
+  source.visit(overloaded([&](const FileSourceMessage &source) { td::store(source.message_full_id, storer); },
+                          [&](const FileSourceUserPhoto &source) {
+                            td::store(source.user_id, storer);
+                            td::store(source.photo_id, storer);
+                          },
+                          [&](const FileSourceChatPhoto &source) { td::store(source.chat_id, storer); },
+                          [&](const FileSourceChannelPhoto &source) { td::store(source.channel_id, storer); },
+                          [&](const FileSourceWallpapers &source) {},
+                          [&](const FileSourceWebPage &source) { td::store(source.url, storer); },
+                          [&](const FileSourceSavedAnimations &source) {},
+                          [&](const FileSourceRecentStickers &source) { td::store(source.is_attached, storer); },
+                          [&](const FileSourceFavoriteStickers &source) {},
+                          [&](const FileSourceBackground &source) {
+                            td::store(source.background_id, storer);
+                            td::store(source.access_hash, storer);
+                          },
+                          [&](const FileSourceChatFull &source) { td::store(source.chat_id, storer); },
+                          [&](const FileSourceChannelFull &source) { td::store(source.channel_id, storer); },
+                          [&](const FileSourceAppConfig &source) {}, [&](const FileSourceSavedRingtones &source) {},
+                          [&](const FileSourceUserFull &source) { td::store(source.user_id, storer); },
+                          [&](const FileSourceAttachMenuBot &source) { td::store(source.user_id, storer); },
+                          [&](const FileSourceWebApp &source) {
+                            td::store(source.user_id, storer);
+                            td::store(source.short_name, storer);
+                          },
+                          [&](const FileSourceStory &source) { td::store(source.story_full_id, storer); },
+                          [&](const FileSourceQuickReplyMessage &source) { td::store(source.message_full_id, storer); },
+                          [&](const FileSourceStarTransaction &source) {
+                            td::store(source.dialog_id, storer);
+                            td::store(source.transaction_id, storer);
+                            td::store(source.is_refund, storer);
+                          },
+                          [&](const FileSourceBotMediaPreview &source) { td::store(source.bot_user_id, storer); },
+                          [&](const FileSourceBotMediaPreviewInfo &source) {
+                            td::store(source.bot_user_id, storer);
+                            td::store(source.language_code, storer);
+                          }));
 }
 
 template <class ParserT>
@@ -147,7 +159,7 @@ FileSourceId FileReferenceManager::parse_file_source(Td *td, ParserT &parser) {
       string short_name;
       td::parse(user_id, parser);
       td::parse(short_name, parser);
-      return td->attach_menu_manager_->get_web_app_file_source_id(user_id, short_name);
+      return td->web_app_manager_->get_web_app_file_source_id(user_id, short_name);
     }
     case 17: {
       StoryFullId story_full_id;
@@ -158,6 +170,27 @@ FileSourceId FileReferenceManager::parse_file_source(Td *td, ParserT &parser) {
       QuickReplyMessageFullId message_full_id;
       td::parse(message_full_id, parser);
       return td->quick_reply_manager_->get_quick_reply_message_file_source_id(message_full_id);
+    }
+    case 19: {
+      DialogId dialog_id;
+      string transaction_id;
+      bool is_refund;
+      td::parse(dialog_id, parser);
+      td::parse(transaction_id, parser);
+      td::parse(is_refund, parser);
+      return td->star_manager_->get_star_transaction_file_source_id(dialog_id, transaction_id, is_refund);
+    }
+    case 20: {
+      UserId bot_user_id;
+      td::parse(bot_user_id, parser);
+      return td->bot_info_manager_->get_bot_media_preview_file_source_id(bot_user_id);
+    }
+    case 21: {
+      UserId bot_user_id;
+      string language_code;
+      td::parse(bot_user_id, parser);
+      td::parse(language_code, parser);
+      return td->bot_info_manager_->get_bot_media_preview_info_file_source_id(bot_user_id, language_code);
     }
     default:
       parser.set_error("Invalid type in FileSource");

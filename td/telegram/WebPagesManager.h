@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2024
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -75,15 +75,15 @@ class WebPagesManager final : public Actor {
 
   bool have_web_page_force(WebPageId web_page_id);
 
-  tl_object_ptr<td_api::webPage> get_web_page_object(WebPageId web_page_id, bool force_small_media,
-                                                     bool force_large_media, bool skip_confirmation,
-                                                     bool invert_media) const;
+  td_api::object_ptr<td_api::linkPreview> get_link_preview_object(WebPageId web_page_id, bool force_small_media,
+                                                                  bool force_large_media, bool skip_confirmation,
+                                                                  bool invert_media) const;
 
-  tl_object_ptr<td_api::webPageInstantView> get_web_page_instant_view_object(WebPageId web_page_id) const;
+  td_api::object_ptr<td_api::webPageInstantView> get_web_page_instant_view_object(WebPageId web_page_id) const;
 
   void get_web_page_preview(td_api::object_ptr<td_api::formattedText> &&text,
                             td_api::object_ptr<td_api::linkPreviewOptions> &&link_preview_options,
-                            Promise<td_api::object_ptr<td_api::webPage>> &&promise);
+                            Promise<td_api::object_ptr<td_api::linkPreview>> &&promise);
 
   void get_web_page_instant_view(const string &url, bool force_full, Promise<WebPageId> &&promise);
 
@@ -97,7 +97,7 @@ class WebPagesManager final : public Actor {
 
   void on_get_web_page_preview(unique_ptr<GetWebPagePreviewOptions> &&options,
                                tl_object_ptr<telegram_api::MessageMedia> &&message_media_ptr,
-                               Promise<td_api::object_ptr<td_api::webPage>> &&promise);
+                               Promise<td_api::object_ptr<td_api::linkPreview>> &&promise);
 
   void on_binlog_web_page_event(BinlogEvent &&event);
 
@@ -138,7 +138,12 @@ class WebPagesManager final : public Actor {
 
   void get_web_page_instant_view_impl(WebPageId web_page_id, bool force_full, Promise<WebPageId> &&promise);
 
-  tl_object_ptr<td_api::webPageInstantView> get_web_page_instant_view_object(
+  td_api::object_ptr<td_api::LinkPreviewType> get_link_preview_type_album_object(
+      const WebPageInstantView &instant_view) const;
+
+  td_api::object_ptr<td_api::LinkPreviewType> get_link_preview_type_object(const WebPage *web_page) const;
+
+  td_api::object_ptr<td_api::webPageInstantView> get_web_page_instant_view_object(
       WebPageId web_page_id, const WebPageInstantView *web_page_instant_view, Slice web_page_url) const;
 
   static void on_pending_web_page_timeout_callback(void *web_pages_manager_ptr, int64 web_page_id_int);
@@ -146,7 +151,7 @@ class WebPagesManager final : public Actor {
   void on_pending_web_page_timeout(WebPageId web_page_id);
 
   void on_get_web_page_preview_success(unique_ptr<GetWebPagePreviewOptions> &&options, WebPageId web_page_id,
-                                       Promise<td_api::object_ptr<td_api::webPage>> &&promise);
+                                       Promise<td_api::object_ptr<td_api::linkPreview>> &&promise);
 
   void on_get_web_page_instant_view(WebPage *web_page, tl_object_ptr<telegram_api::page> &&page, int32 hash,
                                     DialogId owner_dialog_id);
@@ -191,6 +196,10 @@ class WebPagesManager final : public Actor {
 
   vector<FileId> get_web_page_file_ids(const WebPage *web_page) const;
 
+  static bool can_web_page_be_album(const WebPage *web_page);
+
+  static bool is_web_page_album(const WebPage *web_page);
+
   Td *td_;
   ActorShared<> parent_;
   WaitFreeHashMap<WebPageId, unique_ptr<WebPage>, WebPageIdHash> web_pages_;
@@ -209,7 +218,7 @@ class WebPagesManager final : public Actor {
       web_page_quick_reply_messages_;
 
   FlatHashMap<WebPageId,
-              vector<std::pair<unique_ptr<GetWebPagePreviewOptions>, Promise<td_api::object_ptr<td_api::webPage>>>>,
+              vector<std::pair<unique_ptr<GetWebPagePreviewOptions>, Promise<td_api::object_ptr<td_api::linkPreview>>>>,
               WebPageIdHash>
       pending_get_web_pages_;
 

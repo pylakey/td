@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2024
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -385,9 +385,9 @@ class FlatHashTable {
   }
 
   template <class F>
-  void remove_if(F &&f) {
+  bool remove_if(F &&f) {
     if (empty()) {
-      return;
+      return false;
     }
 
     auto it = begin_impl();
@@ -401,9 +401,11 @@ class FlatHashTable {
       } while (!it->empty());
     }
     auto first_empty = it;
+    bool is_removed = false;
     while (it != end) {
       if (!it->empty() && f(it->get_public())) {
         erase_node(it);
+        is_removed = true;
       } else {
         ++it;
       }
@@ -411,11 +413,13 @@ class FlatHashTable {
     for (it = nodes_; it != first_empty;) {
       if (!it->empty() && f(it->get_public())) {
         erase_node(it);
+        is_removed = true;
       } else {
         ++it;
       }
     }
     try_shrink();
+    return is_removed;
   }
 
  private:

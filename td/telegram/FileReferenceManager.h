@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2024
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -9,6 +9,7 @@
 #include "td/telegram/BackgroundId.h"
 #include "td/telegram/ChannelId.h"
 #include "td/telegram/ChatId.h"
+#include "td/telegram/DialogId.h"
 #include "td/telegram/files/FileId.h"
 #include "td/telegram/files/FileSourceId.h"
 #include "td/telegram/MessageFullId.h"
@@ -46,7 +47,12 @@ class FileReferenceManager final : public Actor {
   ~FileReferenceManager() final;
 
   static bool is_file_reference_error(const Status &error);
-  static size_t get_file_reference_error_pos(const Status &error);
+
+  struct FileReferenceErrorSource {
+    size_t pos_;
+    bool is_cover_;
+  };
+  static FileReferenceErrorSource get_file_reference_error_source(const Status &error);
 
   FileSourceId create_message_file_source(MessageFullId message_full_id);
   FileSourceId create_user_photo_file_source(UserId user_id, int64 photo_id);
@@ -68,6 +74,9 @@ class FileReferenceManager final : public Actor {
   FileSourceId create_web_app_file_source(UserId user_id, const string &short_name);
   FileSourceId create_story_file_source(StoryFullId story_full_id);
   FileSourceId create_quick_reply_message_file_source(QuickReplyMessageFullId message_full_id);
+  FileSourceId create_star_transaction_file_source(DialogId dialog_id, const string &transaction_id, bool is_refund);
+  FileSourceId create_bot_media_preview_file_source(UserId bot_user_id);
+  FileSourceId create_bot_media_preview_info_file_source(UserId bot_user_id, const string &language_code);
 
   using NodeId = FileId;
   void repair_file_reference(NodeId node_id, Promise<> promise);
@@ -78,13 +87,13 @@ class FileReferenceManager final : public Actor {
 
   static void reload_photo(PhotoSizeSource source, Promise<Unit> promise);
 
-  bool add_file_source(NodeId node_id, FileSourceId file_source_id);
+  bool add_file_source(NodeId node_id, FileSourceId file_source_id, const char *source);
 
   vector<FileSourceId> get_some_file_sources(NodeId node_id);
 
   vector<MessageFullId> get_some_message_file_sources(NodeId node_id);
 
-  bool remove_file_source(NodeId node_id, FileSourceId file_source_id);
+  bool remove_file_source(NodeId node_id, FileSourceId file_source_id, const char *source);
 
   void merge(NodeId to_node_id, NodeId from_node_id);
 
@@ -179,6 +188,18 @@ class FileReferenceManager final : public Actor {
   struct FileSourceQuickReplyMessage {
     QuickReplyMessageFullId message_full_id;
   };
+  struct FileSourceStarTransaction {
+    DialogId dialog_id;
+    string transaction_id;
+    bool is_refund;
+  };
+  struct FileSourceBotMediaPreview {
+    UserId bot_user_id;
+  };
+  struct FileSourceBotMediaPreviewInfo {
+    UserId bot_user_id;
+    string language_code;
+  };
 
   // append only
   using FileSource =
@@ -186,7 +207,8 @@ class FileReferenceManager final : public Actor {
               FileSourceWebPage, FileSourceSavedAnimations, FileSourceRecentStickers, FileSourceFavoriteStickers,
               FileSourceBackground, FileSourceChatFull, FileSourceChannelFull, FileSourceAppConfig,
               FileSourceSavedRingtones, FileSourceUserFull, FileSourceAttachMenuBot, FileSourceWebApp, FileSourceStory,
-              FileSourceQuickReplyMessage>;
+              FileSourceQuickReplyMessage, FileSourceStarTransaction, FileSourceBotMediaPreview,
+              FileSourceBotMediaPreviewInfo>;
   WaitFreeVector<FileSource> file_sources_;
 
   int64 query_generation_{0};

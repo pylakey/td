@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2024
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -18,7 +18,10 @@
 #include "td/telegram/ServerMessageId.h"
 #include "td/telegram/Td.h"
 
+#include "td/utils/emoji.h"
 #include "td/utils/logging.h"
+
+#include <cmath>
 
 namespace td {
 
@@ -60,7 +63,7 @@ MediaArea::MediaArea(Td *td, telegram_api::object_ptr<telegram_api::MediaArea> &
       reaction_type_ = ReactionType(area->reaction_);
       is_dark_ = area->dark_;
       is_flipped_ = area->flipped_;
-      if (coordinates_.is_valid() && !reaction_type_.is_empty()) {
+      if (coordinates_.is_valid() && !reaction_type_.is_empty() && !reaction_type_.is_paid_reaction()) {
         type_ = Type::Reaction;
       } else {
         LOG(ERROR) << "Receive " << to_string(area);
@@ -86,6 +89,30 @@ MediaArea::MediaArea(Td *td, telegram_api::object_ptr<telegram_api::MediaArea> &
       if (coordinates_.is_valid()) {
         type_ = Type::Url;
         url_ = std::move(area->url_);
+      } else {
+        LOG(ERROR) << "Receive " << to_string(area);
+      }
+      break;
+    }
+    case telegram_api::mediaAreaWeather::ID: {
+      auto area = telegram_api::move_object_as<telegram_api::mediaAreaWeather>(media_area_ptr);
+      coordinates_ = MediaAreaCoordinates(area->coordinates_);
+      if (coordinates_.is_valid() && is_emoji(area->emoji_) && std::isfinite(area->temperature_c_)) {
+        type_ = Type::Weather;
+        url_ = std::move(area->emoji_);
+        temperature_ = area->temperature_c_;
+        color_ = area->color_;
+      } else {
+        LOG(ERROR) << "Receive " << to_string(area);
+      }
+      break;
+    }
+    case telegram_api::mediaAreaStarGift::ID: {
+      auto area = telegram_api::move_object_as<telegram_api::mediaAreaStarGift>(media_area_ptr);
+      coordinates_ = MediaAreaCoordinates(area->coordinates_);
+      if (coordinates_.is_valid() && !area->slug_.empty()) {
+        type_ = Type::StarGift;
+        url_ = std::move(area->slug_);
       } else {
         LOG(ERROR) << "Receive " << to_string(area);
       }
@@ -166,7 +193,7 @@ MediaArea::MediaArea(Td *td, td_api::object_ptr<td_api::inputStoryArea> &&input_
       reaction_type_ = ReactionType(type->reaction_type_);
       is_dark_ = type->is_dark_;
       is_flipped_ = type->is_flipped_;
-      if (!reaction_type_.is_empty()) {
+      if (!reaction_type_.is_empty() && !reaction_type_.is_paid_reaction()) {
         type_ = Type::Reaction;
       }
       break;
@@ -185,9 +212,7 @@ MediaArea::MediaArea(Td *td, td_api::object_ptr<td_api::inputStoryArea> &&input_
         }
       }
       if (!is_old_message_) {
-        if (dialog_id.get_type() != DialogType::Channel ||
-            !td->messages_manager_->have_message_force(message_full_id, "inputStoryAreaTypeMessage") ||
-            !message_id.is_valid() || !message_id.is_server()) {
+        if (!td->messages_manager_->can_share_message_in_story(message_full_id)) {
           break;
         }
         message_full_id_ = message_full_id;
@@ -202,6 +227,26 @@ MediaArea::MediaArea(Td *td, td_api::object_ptr<td_api::inputStoryArea> &&input_
       }
       url_ = std::move(type->url_);
       type_ = Type::Url;
+      break;
+    }
+    case td_api::inputStoryAreaTypeWeather::ID: {
+      auto type = td_api::move_object_as<td_api::inputStoryAreaTypeWeather>(input_story_area->type_);
+      if (!clean_input_string(type->emoji_) || !is_emoji(type->emoji_) || !std::isfinite(type->temperature_)) {
+        break;
+      }
+      url_ = std::move(type->emoji_);
+      temperature_ = type->temperature_;
+      color_ = type->background_color_;
+      type_ = Type::Weather;
+      break;
+    }
+    case td_api::inputStoryAreaTypeUpgradedGift::ID: {
+      auto type = td_api::move_object_as<td_api::inputStoryAreaTypeUpgradedGift>(input_story_area->type_);
+      if (!clean_input_string(type->gift_name_) || type->gift_name_.empty()) {
+        break;
+      }
+      url_ = std::move(type->gift_name_);
+      type_ = Type::StarGift;
       break;
     }
     default:
@@ -246,6 +291,12 @@ td_api::object_ptr<td_api::storyArea> MediaArea::get_story_area_object(
       break;
     case Type::Url:
       type = td_api::make_object<td_api::storyAreaTypeLink>(url_);
+      break;
+    case Type::Weather:
+      type = td_api::make_object<td_api::storyAreaTypeWeather>(temperature_, url_, color_);
+      break;
+    case Type::StarGift:
+      type = td_api::make_object<td_api::storyAreaTypeUpgradedGift>(url_);
       break;
     default:
       UNREACHABLE();
@@ -313,6 +364,12 @@ telegram_api::object_ptr<telegram_api::MediaArea> MediaArea::get_input_media_are
     case Type::Url:
       return telegram_api::make_object<telegram_api::mediaAreaUrl>(coordinates_.get_input_media_area_coordinates(),
                                                                    url_);
+    case Type::Weather:
+      return telegram_api::make_object<telegram_api::mediaAreaWeather>(coordinates_.get_input_media_area_coordinates(),
+                                                                       url_, temperature_, color_);
+    case Type::StarGift:
+      return telegram_api::make_object<telegram_api::mediaAreaStarGift>(coordinates_.get_input_media_area_coordinates(),
+                                                                        url_);
     default:
       UNREACHABLE();
       return nullptr;
@@ -339,8 +396,9 @@ bool operator==(const MediaArea &lhs, const MediaArea &rhs) {
   return lhs.type_ == rhs.type_ && lhs.coordinates_ == rhs.coordinates_ && lhs.location_ == rhs.location_ &&
          lhs.venue_ == rhs.venue_ && lhs.message_full_id_ == rhs.message_full_id_ &&
          lhs.input_query_id_ == rhs.input_query_id_ && lhs.input_result_id_ == rhs.input_result_id_ &&
-         lhs.reaction_type_ == rhs.reaction_type_ && lhs.is_dark_ == rhs.is_dark_ &&
-         lhs.is_flipped_ == rhs.is_flipped_ && lhs.is_old_message_ == rhs.is_old_message_;
+         lhs.reaction_type_ == rhs.reaction_type_ && std::fabs(lhs.temperature_ - rhs.temperature_) < 1e-6 &&
+         lhs.color_ == rhs.color_ && lhs.is_dark_ == rhs.is_dark_ && lhs.is_flipped_ == rhs.is_flipped_ &&
+         lhs.is_old_message_ == rhs.is_old_message_;
 }
 
 bool operator!=(const MediaArea &lhs, const MediaArea &rhs) {
@@ -350,7 +408,7 @@ bool operator!=(const MediaArea &lhs, const MediaArea &rhs) {
 StringBuilder &operator<<(StringBuilder &string_builder, const MediaArea &media_area) {
   return string_builder << "StoryArea[" << media_area.coordinates_ << ": " << media_area.location_ << '/'
                         << media_area.venue_ << '/' << media_area.reaction_type_ << '/' << media_area.message_full_id_
-                        << ']';
+                        << '/' << media_area.temperature_ << ']';
 }
 
 }  // namespace td

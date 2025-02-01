@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2024
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -18,6 +18,7 @@
 #include "td/telegram/MessageId.h"
 #include "td/telegram/MessageSender.h"
 #include "td/telegram/MessagesManager.h"
+#include "td/telegram/OnlineManager.h"
 #include "td/telegram/PollId.hpp"
 #include "td/telegram/PollManager.hpp"
 #include "td/telegram/StateManager.h"
@@ -434,7 +435,7 @@ void PollManager::remove_unallowed_entities(FormattedText &text) {
 }
 
 td_api::object_ptr<td_api::pollOption> PollManager::get_poll_option_object(const PollOption &poll_option) {
-  return td_api::make_object<td_api::pollOption>(get_formatted_text_object(poll_option.text_, true, -1),
+  return td_api::make_object<td_api::pollOption>(get_formatted_text_object(nullptr, poll_option.text_, true, -1),
                                                  poll_option.voter_count_, 0, poll_option.is_chosen_, false);
 }
 
@@ -563,7 +564,7 @@ td_api::object_ptr<td_api::poll> PollManager::get_poll_object(PollId poll_id, co
         voter_count_diff = -1;
       }
       poll_options.push_back(td_api::make_object<td_api::pollOption>(
-          get_formatted_text_object(poll_option.text_, true, -1),
+          get_formatted_text_object(nullptr, poll_option.text_, true, -1),
           poll_option.voter_count_ - static_cast<int32>(poll_option.is_chosen_), 0, false, is_being_chosen));
     }
   }
@@ -607,7 +608,7 @@ td_api::object_ptr<td_api::poll> PollManager::get_poll_object(PollId poll_id, co
     auto correct_option_id = is_local_poll_id(poll_id) ? -1 : poll->correct_option_id_;
     poll_type = td_api::make_object<td_api::pollTypeQuiz>(
         correct_option_id,
-        get_formatted_text_object(is_local_poll_id(poll_id) ? FormattedText() : poll->explanation_, true, -1));
+        get_formatted_text_object(nullptr, is_local_poll_id(poll_id) ? FormattedText() : poll->explanation_, true, -1));
   } else {
     poll_type = td_api::make_object<td_api::pollTypeRegular>(poll->allow_multiple_answers_);
   }
@@ -637,9 +638,10 @@ td_api::object_ptr<td_api::poll> PollManager::get_poll_object(PollId poll_id, co
       recent_voters.push_back(std::move(recent_voter));
     }
   }
-  return td_api::make_object<td_api::poll>(
-      poll_id.get(), get_formatted_text_object(poll->question_, true, -1), std::move(poll_options), total_voter_count,
-      std::move(recent_voters), poll->is_anonymous_, std::move(poll_type), open_period, close_date, poll->is_closed_);
+  return td_api::make_object<td_api::poll>(poll_id.get(), get_formatted_text_object(nullptr, poll->question_, true, -1),
+                                           std::move(poll_options), total_voter_count, std::move(recent_voters),
+                                           poll->is_anonymous_, std::move(poll_type), open_period, close_date,
+                                           poll->is_closed_);
 }
 
 telegram_api::object_ptr<telegram_api::pollAnswer> PollManager::get_input_poll_option(const PollOption &poll_option) {
@@ -1355,7 +1357,7 @@ void PollManager::stop_local_poll(PollId poll_id) {
 }
 
 double PollManager::get_polling_timeout() const {
-  double result = td_->is_online() ? 60 : 30 * 60;
+  double result = td_->online_manager_->is_online() ? 60 : 30 * 60;
   return result * Random::fast(70, 100) * 0.01;
 }
 

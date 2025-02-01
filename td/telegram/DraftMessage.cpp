@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2024
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -44,6 +44,7 @@ class SaveDraftMessageQuery final : public Td::ResultHandler {
     telegram_api::object_ptr<telegram_api::InputReplyTo> input_reply_to;
     vector<telegram_api::object_ptr<telegram_api::MessageEntity>> input_message_entities;
     telegram_api::object_ptr<telegram_api::InputMedia> media;
+    int64 message_effect_id = 0;
     if (draft_message != nullptr) {
       CHECK(!draft_message->is_local());
       input_reply_to = draft_message->message_input_reply_to_.get_input_reply_to(td_, MessageId() /*TODO*/);
@@ -66,13 +67,14 @@ class SaveDraftMessageQuery final : public Td::ResultHandler {
       }
       if (draft_message->message_effect_id_.is_valid()) {
         flags |= telegram_api::messages_saveDraft::EFFECT_MASK;
+        message_effect_id = draft_message->message_effect_id_.get();
       }
     }
     send_query(G()->net_query_creator().create(
         telegram_api::messages_saveDraft(
             flags, false /*ignored*/, false /*ignored*/, std::move(input_reply_to), std::move(input_peer),
             draft_message == nullptr ? string() : draft_message->input_message_text_.text.text,
-            std::move(input_message_entities), std::move(media), draft_message->message_effect_id_.get()),
+            std::move(input_message_entities), std::move(media), message_effect_id),
         {{dialog_id}}));
   }
 
@@ -402,7 +404,7 @@ td_api::object_ptr<td_api::draftMessage> DraftMessage::get_draft_message_object(
   if (local_content_ != nullptr) {
     input_message_content = local_content_->get_draft_input_message_content_object();
   } else {
-    input_message_content = input_message_text_.get_input_message_text_object();
+    input_message_content = input_message_text_.get_input_message_text_object(td->user_manager_.get());
   }
   return td_api::make_object<td_api::draftMessage>(message_input_reply_to_.get_input_message_reply_to_object(td), date_,
                                                    std::move(input_message_content), message_effect_id_.get());

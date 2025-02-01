@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2024
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -10,7 +10,6 @@
 #include "td/telegram/AuthManager.h"
 #include "td/telegram/ChatManager.h"
 #include "td/telegram/DialogManager.h"
-#include "td/telegram/files/FileId.h"
 #include "td/telegram/files/FileManager.h"
 #include "td/telegram/files/FileType.h"
 #include "td/telegram/Global.h"
@@ -21,6 +20,7 @@
 #include "td/telegram/MessageCopyOptions.h"
 #include "td/telegram/MessageEntity.h"
 #include "td/telegram/MessageId.h"
+#include "td/telegram/MessageQueryManager.h"
 #include "td/telegram/MessageQuote.h"
 #include "td/telegram/MessageSelfDestructType.h"
 #include "td/telegram/MessagesManager.h"
@@ -113,6 +113,8 @@ struct BusinessConnectionManager::PendingMessage {
   string send_emoji_;
   MessageSelfDestructType ttl_;
   unique_ptr<MessageContent> content_;
+  FileUploadId file_upload_id_;
+  FileUploadId thumbnail_file_upload_id_;
   unique_ptr<ReplyMarkup> reply_markup_;
   int64 random_id_ = 0;
   MessageEffectId effect_id_;
@@ -120,6 +122,26 @@ struct BusinessConnectionManager::PendingMessage {
   bool disable_notification_ = false;
   bool invert_media_ = false;
   bool disable_web_page_preview_ = false;
+
+  void init_file_upload_ids(Td *td) {
+    CHECK(file_upload_id_ == FileUploadId());
+    if (content_->get_type() == MessageContentType::PaidMedia) {
+      return;
+    }
+    auto file_id =
+        get_message_content_any_file_id(content_.get());  // any_file_id, because it could be a photo sent by ID
+    if (!file_id.is_valid()) {
+      return;
+    }
+    file_upload_id_ = {file_id, FileManager::get_internal_upload_id()};
+    FileView file_view = td->file_manager_->get_file_view(file_id);
+    if (get_file_type_class(file_view.get_type()) != FileTypeClass::Photo) {
+      auto thumbnail_file_id = get_message_content_thumbnail_file_id(content_.get(), td);
+      if (thumbnail_file_id.is_valid()) {
+        thumbnail_file_upload_id_ = {thumbnail_file_id, FileManager::get_internal_upload_id()};
+      }
+    }
+  }
 };
 
 class BusinessConnectionManager::SendBusinessMessageQuery final : public Td::ResultHandler {
@@ -172,11 +194,12 @@ class BusinessConnectionManager::SendBusinessMessageQuery final : public Td::Res
 
     send_query(G()->net_query_creator().create_with_prefix(
         message_->business_connection_id_.get_invoke_prefix(),
-        telegram_api::messages_sendMessage(
-            flags, false /*ignored*/, false /*ignored*/, false /*ignored*/, false /*ignored*/, false /*ignored*/,
-            false /*ignored*/, false /*ignored*/, std::move(input_peer), std::move(reply_to), message_text->text,
-            message_->random_id_, get_input_reply_markup(td_->user_manager_.get(), message_->reply_markup_),
-            std::move(entities), 0, nullptr, nullptr, message_->effect_id_.get()),
+        telegram_api::messages_sendMessage(flags, false /*ignored*/, false /*ignored*/, false /*ignored*/,
+                                           false /*ignored*/, false /*ignored*/, false /*ignored*/, false /*ignored*/,
+                                           false /*ignored*/, std::move(input_peer), std::move(reply_to),
+                                           message_text->text, message_->random_id_,
+                                           get_input_reply_markup(td_->user_manager_.get(), message_->reply_markup_),
+                                           std::move(entities), 0, nullptr, nullptr, message_->effect_id_.get()),
         td_->business_connection_manager_->get_business_connection_dc_id(message_->business_connection_id_),
         {{message_->dialog_id_}}));
   }
@@ -194,6 +217,7 @@ class BusinessConnectionManager::SendBusinessMessageQuery final : public Td::Res
 
   void on_error(Status status) final {
     LOG(INFO) << "Receive error for SendBusinessMessageQuery: " << status;
+    td_->business_connection_manager_->on_fail_send_message(std::move(message_), status);
     promise_.set_error(std::move(status));
   }
 };
@@ -246,8 +270,8 @@ class BusinessConnectionManager::SendBusinessMediaQuery final : public Td::Resul
     send_query(G()->net_query_creator().create_with_prefix(
         message_->business_connection_id_.get_invoke_prefix(),
         telegram_api::messages_sendMedia(flags, false /*ignored*/, false /*ignored*/, false /*ignored*/,
-                                         false /*ignored*/, false /*ignored*/, false /*ignored*/, std::move(input_peer),
-                                         std::move(reply_to), std::move(input_media),
+                                         false /*ignored*/, false /*ignored*/, false /*ignored*/, false /*ignored*/,
+                                         std::move(input_peer), std::move(reply_to), std::move(input_media),
                                          message_text == nullptr ? string() : message_text->text, message_->random_id_,
                                          get_input_reply_markup(td_->user_manager_.get(), message_->reply_markup_),
                                          std::move(entities), 0, nullptr, nullptr, message_->effect_id_.get()),
@@ -268,6 +292,7 @@ class BusinessConnectionManager::SendBusinessMediaQuery final : public Td::Resul
 
   void on_error(Status status) final {
     LOG(INFO) << "Receive error for SendBusinessMediaQuery: " << status;
+    td_->business_connection_manager_->on_fail_send_message(std::move(message_), status);
     promise_.set_error(std::move(status));
   }
 };
@@ -310,10 +335,10 @@ class BusinessConnectionManager::SendBusinessMultiMediaQuery final : public Td::
 
     send_query(G()->net_query_creator().create_with_prefix(
         messages_[0]->business_connection_id_.get_invoke_prefix(),
-        telegram_api::messages_sendMultiMedia(flags, false /*ignored*/, false /*ignored*/, false /*ignored*/,
-                                              false /*ignored*/, false /*ignored*/, false /*ignored*/,
-                                              std::move(input_peer), std::move(reply_to), std::move(input_single_media),
-                                              0, nullptr, nullptr, messages_[0]->effect_id_.get()),
+        telegram_api::messages_sendMultiMedia(
+            flags, false /*ignored*/, false /*ignored*/, false /*ignored*/, false /*ignored*/, false /*ignored*/,
+            false /*ignored*/, false /*ignored*/, std::move(input_peer), std::move(reply_to),
+            std::move(input_single_media), 0, nullptr, nullptr, messages_[0]->effect_id_.get()),
         td_->business_connection_manager_->get_business_connection_dc_id(messages_[0]->business_connection_id_),
         {{messages_[0]->dialog_id_}}));
   }
@@ -331,6 +356,9 @@ class BusinessConnectionManager::SendBusinessMultiMediaQuery final : public Td::
 
   void on_error(Status status) final {
     LOG(INFO) << "Receive error for SendBusinessMultiMediaQuery: " << status;
+    for (auto &message : messages_) {
+      td_->business_connection_manager_->on_fail_send_message(std::move(message), status);
+    }
     promise_.set_error(std::move(status));
   }
 };
@@ -342,16 +370,12 @@ class BusinessConnectionManager::UploadBusinessMediaQuery final : public Td::Res
   bool was_thumbnail_uploaded_ = false;
 
   void delete_thumbnail() {
-    if (!was_thumbnail_uploaded_) {
-      return;
+    if (was_thumbnail_uploaded_) {
+      CHECK(message_->thumbnail_file_upload_id_.is_valid());
+      // always delete partial remote location for the thumbnail, because it can't be reused anyway
+      td_->file_manager_->delete_partial_remote_location(message_->thumbnail_file_upload_id_);
+      message_->thumbnail_file_upload_id_ = {};
     }
-
-    auto file_id = get_message_file_id(message_);
-    CHECK(file_id.is_valid());
-    auto thumbnail_file_id = td_->business_connection_manager_->get_message_thumbnail_file_id(message_, file_id);
-    CHECK(thumbnail_file_id.is_valid());
-    // always delete partial remote location for the thumbnail, because it can't be reused anyway
-    td_->file_manager_->delete_partial_remote_location(thumbnail_file_id);
   }
 
  public:
@@ -395,13 +419,12 @@ class BusinessConnectionManager::UploadBusinessMediaQuery final : public Td::Res
     if (was_uploaded_) {
       delete_thumbnail();
 
-      auto file_id = get_message_file_id(message_);
       auto bad_parts = FileManager::get_missing_file_parts(status);
       if (!bad_parts.empty()) {
         td_->business_connection_manager_->upload_media(std::move(message_), std::move(promise_), std::move(bad_parts));
         return;
       } else {
-        td_->file_manager_->delete_partial_remote_location_if_needed(file_id, status);
+        td_->file_manager_->delete_partial_remote_location_if_needed(message_->file_upload_id_, status);
       }
     }
     promise_.set_error(std::move(status));
@@ -521,39 +544,27 @@ class BusinessConnectionManager::StopBusinessPollQuery final : public Td::Result
 
 class BusinessConnectionManager::UploadMediaCallback final : public FileManager::UploadCallback {
  public:
-  void on_upload_ok(FileId file_id, telegram_api::object_ptr<telegram_api::InputFile> input_file) final {
-    send_closure_later(G()->business_connection_manager(), &BusinessConnectionManager::on_upload_media, file_id,
+  void on_upload_ok(FileUploadId file_upload_id, telegram_api::object_ptr<telegram_api::InputFile> input_file) final {
+    send_closure_later(G()->business_connection_manager(), &BusinessConnectionManager::on_upload_media, file_upload_id,
                        std::move(input_file));
   }
-  void on_upload_encrypted_ok(FileId file_id,
-                              telegram_api::object_ptr<telegram_api::InputEncryptedFile> input_file) final {
-    UNREACHABLE();
-  }
-  void on_upload_secure_ok(FileId file_id, telegram_api::object_ptr<telegram_api::InputSecureFile> input_file) final {
-    UNREACHABLE();
-  }
-  void on_upload_error(FileId file_id, Status error) final {
-    send_closure_later(G()->business_connection_manager(), &BusinessConnectionManager::on_upload_media_error, file_id,
-                       std::move(error));
+
+  void on_upload_error(FileUploadId file_upload_id, Status error) final {
+    send_closure_later(G()->business_connection_manager(), &BusinessConnectionManager::on_upload_media_error,
+                       file_upload_id, std::move(error));
   }
 };
 
 class BusinessConnectionManager::UploadThumbnailCallback final : public FileManager::UploadCallback {
  public:
-  void on_upload_ok(FileId file_id, telegram_api::object_ptr<telegram_api::InputFile> input_file) final {
-    send_closure_later(G()->business_connection_manager(), &BusinessConnectionManager::on_upload_thumbnail, file_id,
-                       std::move(input_file));
+  void on_upload_ok(FileUploadId file_upload_id, telegram_api::object_ptr<telegram_api::InputFile> input_file) final {
+    send_closure_later(G()->business_connection_manager(), &BusinessConnectionManager::on_upload_thumbnail,
+                       file_upload_id, std::move(input_file));
   }
-  void on_upload_encrypted_ok(FileId file_id,
-                              telegram_api::object_ptr<telegram_api::InputEncryptedFile> input_file) final {
-    UNREACHABLE();
-  }
-  void on_upload_secure_ok(FileId file_id, telegram_api::object_ptr<telegram_api::InputSecureFile> input_file) final {
-    UNREACHABLE();
-  }
-  void on_upload_error(FileId file_id, Status error) final {
-    send_closure_later(G()->business_connection_manager(), &BusinessConnectionManager::on_upload_thumbnail, file_id,
-                       nullptr);
+
+  void on_upload_error(FileUploadId file_upload_id, Status error) final {
+    send_closure_later(G()->business_connection_manager(), &BusinessConnectionManager::on_upload_thumbnail,
+                       file_upload_id, nullptr);
   }
 };
 
@@ -779,10 +790,12 @@ Result<InputMessageContent> BusinessConnectionManager::process_input_message_con
   if (input_message_content == nullptr) {
     return Status::Error(400, "Can't send message without content");
   }
-  if (input_message_content->get_id() == td_api::inputMessageForwarded::ID) {
+  auto message_content_id = input_message_content->get_id();
+  if (message_content_id == td_api::inputMessageForwarded::ID) {
     return Status::Error(400, "Can't forward messages as business");
   }
-  return get_input_message_content(DialogId(), std::move(input_message_content), td_, true);
+  return get_input_message_content(td_->dialog_manager_->get_my_dialog_id(), std::move(input_message_content), td_,
+                                   true);
 }
 
 unique_ptr<BusinessConnectionManager::PendingMessage> BusinessConnectionManager::create_business_message_to_send(
@@ -805,6 +818,7 @@ unique_ptr<BusinessConnectionManager::PendingMessage> BusinessConnectionManager:
   message->ttl_ = input_content.ttl;
   message->send_emoji_ = std::move(input_content.emoji);
   message->random_id_ = Random::secure_int64();
+  message->init_file_upload_ids(td_);
   return message;
 }
 
@@ -844,7 +858,60 @@ void BusinessConnectionManager::do_send_message(unique_ptr<PendingMessage> &&mes
     return;
   }
 
-  auto input_media = get_input_media(content, td_, message->ttl_, message->send_emoji_, td_->auth_manager_->is_bot());
+  auto covers = get_message_content_need_to_upload_covers(td_, content);
+  if (!covers.empty()) {
+    auto business_connection_id = message->business_connection_id_;
+    auto dialog_id = message->dialog_id_;
+    return td_->message_query_manager_->upload_message_covers(
+        business_connection_id, dialog_id, std::move(covers),
+        PromiseCreator::lambda([actor_id = actor_id(this), message = std::move(message),
+                                promise = std::move(promise)](Result<Unit> result) mutable {
+          if (result.is_error()) {
+            return promise.set_error(result.move_as_error());
+          }
+          send_closure(actor_id, &BusinessConnectionManager::do_send_message, std::move(message), std::move(promise));
+        }));
+  }
+
+  if (content_type == MessageContentType::PaidMedia) {
+    auto message_contents = get_individual_message_contents(content);
+    auto request_id = ++current_media_group_send_request_id_;
+    auto &request = media_group_send_requests_[request_id];
+    request.upload_results_.resize(message_contents.size());
+    request.paid_media_promise_ = std::move(promise);
+    request.paid_media_message_ = std::move(message);
+
+    for (size_t media_pos = 0; media_pos < message_contents.size(); media_pos++) {
+      auto fake_message = make_unique<PendingMessage>();
+      fake_message->dialog_id_ = request.paid_media_message_->dialog_id_;
+      fake_message->business_connection_id_ = request.paid_media_message_->business_connection_id_;
+      fake_message->content_ = std::move(message_contents[media_pos]);
+      fake_message->init_file_upload_ids(td_);
+      auto input_media = get_message_content_input_media(fake_message->content_.get(), td_, MessageSelfDestructType(),
+                                                         string(), td_->auth_manager_->is_bot());
+      if (input_media != nullptr) {
+        auto file_id = fake_message->file_upload_id_.get_file_id();
+        CHECK(file_id.is_valid());
+        FileView file_view = td_->file_manager_->get_file_view(file_id);
+        if (file_view.has_full_remote_location()) {
+          UploadMediaResult result;
+          result.message_ = std::move(fake_message);
+          result.input_media_ = std::move(input_media);
+          on_upload_message_paid_media(request_id, media_pos, std::move(result));
+          continue;
+        }
+      }
+      upload_media(std::move(fake_message), PromiseCreator::lambda([actor_id = actor_id(this), request_id, media_pos](
+                                                                       Result<UploadMediaResult> &&result) mutable {
+                     send_closure(actor_id, &BusinessConnectionManager::on_upload_message_paid_media, request_id,
+                                  media_pos, std::move(result));
+                   }));
+    }
+    return;
+  }
+
+  auto input_media =
+      get_message_content_input_media(content, td_, message->ttl_, message->send_emoji_, td_->auth_manager_->is_bot());
   if (input_media != nullptr) {
     td_->create_handler<SendBusinessMediaQuery>(std::move(promise))->send(std::move(message), std::move(input_media));
     return;
@@ -887,31 +954,17 @@ void BusinessConnectionManager::process_sent_business_message(
                                                                         std::move(update->reply_to_message_)));
 }
 
-FileId BusinessConnectionManager::get_message_file_id(const unique_ptr<PendingMessage> &message) {
-  CHECK(message != nullptr);
-  return get_message_content_any_file_id(
-      message->content_.get());  // any_file_id, because it could be a photo sent by ID
-}
-
-FileId BusinessConnectionManager::get_message_thumbnail_file_id(const unique_ptr<PendingMessage> &message,
-                                                                FileId file_id) const {
-  FileView file_view = td_->file_manager_->get_file_view(file_id);
-  if (get_main_file_type(file_view.get_type()) == FileType::Photo) {
-    return FileId();
-  }
-  CHECK(message != nullptr);
-  return get_message_content_thumbnail_file_id(message->content_.get(), td_);
-}
-
 void BusinessConnectionManager::upload_media(unique_ptr<PendingMessage> &&message, Promise<UploadMediaResult> &&promise,
                                              vector<int> bad_parts) {
-  auto file_id = get_message_file_id(message);
+  auto file_upload_id = message->file_upload_id_;
+  auto file_id = file_upload_id.get_file_id();
   CHECK(file_id.is_valid());
   FileView file_view = td_->file_manager_->get_file_view(file_id);
   if (file_view.is_encrypted()) {
     return promise.set_error(Status::Error(400, "Can't use encrypted file"));
   }
-  if (file_view.has_remote_location() && file_view.main_remote_location().is_web()) {
+  const auto *main_remote_location = file_view.get_main_remote_location();
+  if (main_remote_location != nullptr && main_remote_location->is_web()) {
     return promise.set_error(Status::Error(400, "Can't use a web file"));
   }
 
@@ -919,17 +972,17 @@ void BusinessConnectionManager::upload_media(unique_ptr<PendingMessage> &&messag
   media.message_ = std::move(message);
   media.promise_ = std::move(promise);
 
-  if (!file_view.has_remote_location() && file_view.has_url()) {
+  if (!file_view.has_full_remote_location() && file_view.has_url()) {
     return do_upload_media(std::move(media), nullptr);
   }
 
-  LOG(INFO) << "Ask to upload file " << file_id << " with bad parts " << bad_parts;
-  CHECK(file_id.is_valid());
-  bool is_inserted = being_uploaded_files_.emplace(file_id, std::move(media)).second;
+  LOG(INFO) << "Ask to upload " << file_upload_id << " with bad parts " << bad_parts;
+  CHECK(file_upload_id.is_valid());
+  bool is_inserted = being_uploaded_files_.emplace(file_upload_id, std::move(media)).second;
   CHECK(is_inserted);
   // need to call resume_upload synchronously to make upload process consistent with being_uploaded_files_
   // and to send is_uploading_active == true in the updates
-  td_->file_manager_->resume_upload(file_id, std::move(bad_parts), upload_media_callback_, 1, 0);
+  td_->file_manager_->resume_upload(file_upload_id, std::move(bad_parts), upload_media_callback_, 1, 0);
 }
 
 void BusinessConnectionManager::complete_send_media(unique_ptr<PendingMessage> &&message,
@@ -941,32 +994,34 @@ void BusinessConnectionManager::complete_send_media(unique_ptr<PendingMessage> &
   td_->create_handler<SendBusinessMediaQuery>(std::move(promise))->send(std::move(message), std::move(input_media));
 }
 
-void BusinessConnectionManager::on_upload_media(FileId file_id,
+void BusinessConnectionManager::on_upload_media(FileUploadId file_upload_id,
                                                 telegram_api::object_ptr<telegram_api::InputFile> input_file) {
-  LOG(INFO) << "File " << file_id << " has been uploaded";
+  LOG(INFO) << "Business media " << file_upload_id << " has been uploaded";
 
-  auto it = being_uploaded_files_.find(file_id);
+  auto it = being_uploaded_files_.find(file_upload_id);
   CHECK(it != being_uploaded_files_.end());
   auto being_uploaded_media = std::move(it->second);
   being_uploaded_files_.erase(it);
+  CHECK(file_upload_id == being_uploaded_media.message_->file_upload_id_);
 
   being_uploaded_media.input_file_ = std::move(input_file);
-  auto thumbnail_file_id = get_message_thumbnail_file_id(being_uploaded_media.message_, file_id);
-  if (being_uploaded_media.input_file_ != nullptr && thumbnail_file_id.is_valid()) {
+  auto thumbnail_file_upload_id = being_uploaded_media.message_->thumbnail_file_upload_id_;
+  if (being_uploaded_media.input_file_ != nullptr && thumbnail_file_upload_id.is_valid()) {
     // TODO: download thumbnail if needed (like in secret chats)
-    LOG(INFO) << "Ask to upload thumbnail " << thumbnail_file_id;
-    bool is_inserted = being_uploaded_thumbnails_.emplace(thumbnail_file_id, std::move(being_uploaded_media)).second;
+    LOG(INFO) << "Ask to upload thumbnail " << thumbnail_file_upload_id;
+    bool is_inserted =
+        being_uploaded_thumbnails_.emplace(thumbnail_file_upload_id, std::move(being_uploaded_media)).second;
     CHECK(is_inserted);
-    td_->file_manager_->upload(thumbnail_file_id, upload_thumbnail_callback_, 1, 0);
+    td_->file_manager_->upload(thumbnail_file_upload_id, upload_thumbnail_callback_, 1, 0);
   } else {
     do_upload_media(std::move(being_uploaded_media), nullptr);
   }
 }
 
-void BusinessConnectionManager::on_upload_media_error(FileId file_id, Status status) {
+void BusinessConnectionManager::on_upload_media_error(FileUploadId file_upload_id, Status status) {
   CHECK(status.is_error());
 
-  auto it = being_uploaded_files_.find(file_id);
+  auto it = being_uploaded_files_.find(file_upload_id);
   CHECK(it != being_uploaded_files_.end());
   auto being_uploaded_media = std::move(it->second);
   being_uploaded_files_.erase(it);
@@ -975,16 +1030,18 @@ void BusinessConnectionManager::on_upload_media_error(FileId file_id, Status sta
 }
 
 void BusinessConnectionManager::on_upload_thumbnail(
-    FileId thumbnail_file_id, telegram_api::object_ptr<telegram_api::InputFile> thumbnail_input_file) {
-  LOG(INFO) << "Thumbnail " << thumbnail_file_id << " has been uploaded as " << to_string(thumbnail_input_file);
+    FileUploadId thumbnail_file_upload_id, telegram_api::object_ptr<telegram_api::InputFile> thumbnail_input_file) {
+  LOG(INFO) << "Thumbnail " << thumbnail_file_upload_id << " has been uploaded as " << to_string(thumbnail_input_file);
 
-  auto it = being_uploaded_thumbnails_.find(thumbnail_file_id);
+  auto it = being_uploaded_thumbnails_.find(thumbnail_file_upload_id);
   CHECK(it != being_uploaded_thumbnails_.end());
   auto being_uploaded_media = std::move(it->second);
   being_uploaded_thumbnails_.erase(it);
+  CHECK(thumbnail_file_upload_id == being_uploaded_media.message_->thumbnail_file_upload_id_);
 
   if (thumbnail_input_file == nullptr) {
     delete_message_content_thumbnail(being_uploaded_media.message_->content_.get(), td_);
+    being_uploaded_media.message_->thumbnail_file_upload_id_ = FileUploadId();
   }
 
   do_upload_media(std::move(being_uploaded_media), std::move(thumbnail_input_file));
@@ -992,75 +1049,55 @@ void BusinessConnectionManager::on_upload_thumbnail(
 
 void BusinessConnectionManager::do_upload_media(BeingUploadedMedia &&being_uploaded_media,
                                                 telegram_api::object_ptr<telegram_api::InputFile> input_thumbnail) {
-  auto file_id = get_message_file_id(being_uploaded_media.message_);
-  auto thumbnail_file_id = get_message_thumbnail_file_id(being_uploaded_media.message_, file_id);
+  auto file_upload_id = being_uploaded_media.message_->file_upload_id_;
+  auto thumbnail_file_upload_id = being_uploaded_media.message_->thumbnail_file_upload_id_;
   auto input_file = std::move(being_uploaded_media.input_file_);
   bool have_input_file = input_file != nullptr;
   bool have_input_thumbnail = input_thumbnail != nullptr;
-  LOG(INFO) << "Do upload media file " << file_id << " with thumbnail " << thumbnail_file_id
+  LOG(INFO) << "Do upload media " << file_upload_id << " with thumbnail " << thumbnail_file_upload_id
             << ", have_input_file = " << have_input_file << ", have_input_thumbnail = " << have_input_thumbnail;
 
   const auto *message = being_uploaded_media.message_.get();
-  auto input_media = get_input_media(message->content_.get(), td_, std::move(input_file), std::move(input_thumbnail),
-                                     file_id, thumbnail_file_id, message->ttl_, message->send_emoji_, true);
+  auto input_media = get_message_content_input_media(
+      message->content_.get(), -1, td_, std::move(input_file), std::move(input_thumbnail), file_upload_id,
+      thumbnail_file_upload_id, message->ttl_, message->send_emoji_, true);
   CHECK(input_media != nullptr);
-  auto input_media_id = input_media->get_id();
-  if (input_media_id == telegram_api::inputMediaDocument::ID || input_media_id == telegram_api::inputMediaPhoto::ID) {
-    // can use input media directly
+  if (is_uploaded_input_media(input_media)) {
     UploadMediaResult result;
     result.message_ = std::move(being_uploaded_media.message_);
     result.input_media_ = std::move(input_media);
     return being_uploaded_media.promise_.set_value(std::move(result));
-  }
-
-  switch (input_media->get_id()) {
-    case telegram_api::inputMediaUploadedDocument::ID:
-      if (message->content_->get_type() != MessageContentType::Animation) {
-        static_cast<telegram_api::inputMediaUploadedDocument *>(input_media.get())->flags_ |=
-            telegram_api::inputMediaUploadedDocument::NOSOUND_VIDEO_MASK;
-      }
-    // fallthrough
-    case telegram_api::inputMediaUploadedPhoto::ID:
-    case telegram_api::inputMediaDocumentExternal::ID:
-    case telegram_api::inputMediaPhotoExternal::ID:
-      td_->create_handler<UploadBusinessMediaQuery>(std::move(being_uploaded_media.promise_))
-          ->send(std::move(being_uploaded_media.message_), std::move(input_media));
-      break;
-    default:
-      LOG(ERROR) << "Have wrong input media " << to_string(input_media);
-      being_uploaded_media.promise_.set_error(Status::Error(400, "Invalid input media"));
+  } else {
+    td_->create_handler<UploadBusinessMediaQuery>(std::move(being_uploaded_media.promise_))
+        ->send(std::move(being_uploaded_media.message_), std::move(input_media));
   }
 }
 
 void BusinessConnectionManager::complete_upload_media(unique_ptr<PendingMessage> &&message,
                                                       telegram_api::object_ptr<telegram_api::MessageMedia> &&media,
                                                       Promise<UploadMediaResult> &&promise) {
-  auto *content = message->content_.get();
-  auto *caption = get_message_content_caption(content);
-  auto has_spoiler = get_message_content_has_spoiler(content);
-  auto new_content = get_message_content(td_, caption == nullptr ? FormattedText() : *caption, std::move(media),
-                                         td_->dialog_manager_->get_my_dialog_id(), G()->unix_time(), false, UserId(),
-                                         nullptr, nullptr, "complete_upload_media");
-  set_message_content_has_spoiler(new_content.get(), has_spoiler);
-
+  auto new_content =
+      get_uploaded_message_content(td_, message->content_.get(), -1, std::move(media),
+                                   td_->dialog_manager_->get_my_dialog_id(), G()->unix_time(), "complete_upload_media");
   bool is_content_changed = false;
   bool need_update = false;
 
   unique_ptr<MessageContent> &old_content = message->content_;
-  MessageContentType old_content_type = old_content->get_type();
-  MessageContentType new_content_type = new_content->get_type();
+  auto old_content_type = old_content->get_type();
+  auto new_content_type = new_content->get_type();
 
-  auto old_file_id = get_message_file_id(message);
+  auto old_file_id = message->file_upload_id_.get_file_id();
   if (old_content_type != new_content_type) {
     need_update = true;
 
-    td_->file_manager_->try_merge_documents(old_file_id, get_message_content_any_file_id(new_content.get()));
+    td_->file_manager_->try_merge_documents(get_message_content_any_file_id(new_content.get()), old_file_id);
   } else {
     merge_message_contents(td_, old_content.get(), new_content.get(), false, DialogId(), true, is_content_changed,
                            need_update);
     compare_message_contents(td_, old_content.get(), new_content.get(), is_content_changed, need_update);
   }
-  send_closure_later(G()->file_manager(), &FileManager::cancel_upload, old_file_id);
+  send_closure_later(G()->file_manager(), &FileManager::cancel_upload, message->file_upload_id_);
+  message->file_upload_id_ = {};
 
   if (is_content_changed || need_update) {
     old_content = std::move(new_content);
@@ -1069,7 +1106,8 @@ void BusinessConnectionManager::complete_upload_media(unique_ptr<PendingMessage>
     update_message_content_file_id_remote(old_content.get(), get_message_content_any_file_id(new_content.get()));
   }
 
-  auto input_media = get_input_media(message->content_.get(), td_, message->ttl_, message->send_emoji_, true);
+  auto input_media =
+      get_message_content_input_media(message->content_.get(), td_, message->ttl_, message->send_emoji_, true);
   if (input_media == nullptr) {
     return promise.set_error(Status::Error(400, "Failed to upload file"));
   }
@@ -1105,13 +1143,13 @@ void BusinessConnectionManager::send_message_album(
     auto message =
         create_business_message_to_send(business_connection_id, dialog_id, input_reply_to.clone(), disable_notification,
                                         protect_content, effect_id, nullptr, std::move(message_content));
-    auto input_media = get_input_media(message->content_.get(), td_, message->ttl_, message->send_emoji_,
-                                       td_->auth_manager_->is_bot());
+    auto input_media = get_message_content_input_media(message->content_.get(), td_, message->ttl_,
+                                                       message->send_emoji_, td_->auth_manager_->is_bot());
     if (input_media != nullptr) {
-      auto file_id = get_message_file_id(message);
+      auto file_id = message->file_upload_id_.get_file_id();
       CHECK(file_id.is_valid());
       FileView file_view = td_->file_manager_->get_file_view(file_id);
-      if (file_view.has_remote_location()) {
+      if (file_view.has_full_remote_location()) {
         UploadMediaResult result;
         result.message_ = std::move(message);
         result.input_media_ = std::move(input_media);
@@ -1144,6 +1182,7 @@ void BusinessConnectionManager::on_upload_message_album_media(int64 request_id, 
 
   auto upload_results = std::move(request.upload_results_);
   auto promise = std::move(request.promise_);
+  CHECK(request.paid_media_message_ == nullptr);
   media_group_send_requests_.erase(it);
 
   for (auto &r_upload_result : upload_results) {
@@ -1196,6 +1235,58 @@ void BusinessConnectionManager::process_sent_business_message_album(
         std::move(update->message_), std::move(update->reply_to_message_)));
   }
   promise.set_value(std::move(messages));
+}
+
+void BusinessConnectionManager::on_upload_message_paid_media(int64 request_id, size_t media_pos,
+                                                             Result<UploadMediaResult> &&result) {
+  G()->ignore_result_if_closing(result);
+  auto it = media_group_send_requests_.find(request_id);
+  CHECK(it != media_group_send_requests_.end());
+  auto &request = it->second;
+
+  request.upload_results_[media_pos] = std::move(result);
+  request.finished_count_++;
+
+  LOG(INFO) << "Receive uploaded paid media " << media_pos << " for request " << request_id;
+  if (request.finished_count_ != request.upload_results_.size()) {
+    return;
+  }
+
+  auto upload_results = std::move(request.upload_results_);
+  auto message = std::move(request.paid_media_message_);
+  auto promise = std::move(request.paid_media_promise_);
+  media_group_send_requests_.erase(it);
+
+  CHECK(message != nullptr);
+  for (auto &r_upload_result : upload_results) {
+    if (r_upload_result.is_error()) {
+      return promise.set_error(r_upload_result.move_as_error());
+    }
+  }
+  vector<telegram_api::object_ptr<telegram_api::InputMedia>> input_media;
+  for (auto &r_upload_result : upload_results) {
+    auto upload_result = r_upload_result.move_as_ok();
+    input_media.push_back(std::move(upload_result.input_media_));
+  }
+  auto payload = get_message_content_payload(message->content_.get());
+  int32 flags = 0;
+  if (!payload.empty()) {
+    flags |= telegram_api::inputMediaPaidMedia::PAYLOAD_MASK;
+  }
+  auto input_media_paid_media = telegram_api::make_object<telegram_api::inputMediaPaidMedia>(
+      flags, get_message_content_star_count(message->content_.get()), std::move(input_media), payload);
+  td_->create_handler<SendBusinessMediaQuery>(std::move(promise))
+      ->send(std::move(message), std::move(input_media_paid_media));
+}
+
+void BusinessConnectionManager::on_fail_send_message(unique_ptr<PendingMessage> &&message, const Status &error) {
+  int32 error_code = error.code();
+  string error_message = error.message().str();
+  MessagesManager::process_send_message_fail_error(error_code, error_message, message->dialog_id_,
+                                                   td_->auth_manager_->is_bot(), message->content_->get_type());
+  if (error_code != 403 && !(error_code == 500 && G()->close_flag())) {
+    LOG(WARNING) << "Failed to send business in " << message->dialog_id_ << " with the error " << error;
+  }
 }
 
 void BusinessConnectionManager::edit_business_message_text(
@@ -1299,25 +1390,30 @@ void BusinessConnectionManager::edit_business_message_media(
   TRY_RESULT_PROMISE(promise, new_reply_markup,
                      get_reply_markup(std::move(reply_markup), td_->auth_manager_->is_bot(), true, false, true));
 
-  auto input_media = get_input_media(content.content.get(), td_, MessageSelfDestructType(), string(), true);
-  if (input_media != nullptr) {
-    auto file_id = get_message_content_any_file_id(content.content.get());
-    CHECK(file_id.is_valid());
-    FileView file_view = td_->file_manager_->get_file_view(file_id);
-    if (file_view.has_remote_location()) {
-      const FormattedText *caption = get_message_content_caption(content.content.get());
-      td_->create_handler<EditBusinessMessageQuery>(std::move(promise))
-          ->send(1 << 11, business_connection_id, dialog_id, message_id, caption == nullptr ? "" : caption->text,
-                 get_input_message_entities(td_->user_manager_.get(), caption, "edit_business_message_media"),
-                 std::move(input_media), content.invert_media,
-                 get_input_reply_markup(td_->user_manager_.get(), new_reply_markup));
-      return;
-    }
-  }
-
   auto message = create_business_message_to_send(business_connection_id, dialog_id, MessageInputReplyTo(), false, false,
                                                  MessageEffectId(), std::move(new_reply_markup), std::move(content));
   message->message_id_ = message_id;
+
+  do_edit_message_media(std::move(message), std::move(promise));
+}
+
+void BusinessConnectionManager::do_edit_message_media(unique_ptr<PendingMessage> &&message,
+                                                      Promise<td_api::object_ptr<td_api::businessMessage>> &&promise) {
+  auto covers = get_message_content_need_to_upload_covers(td_, message->content_.get());
+  if (!covers.empty()) {
+    auto business_connection_id = message->business_connection_id_;
+    auto dialog_id = message->dialog_id_;
+    return td_->message_query_manager_->upload_message_covers(
+        business_connection_id, dialog_id, std::move(covers),
+        PromiseCreator::lambda([actor_id = actor_id(this), message = std::move(message),
+                                promise = std::move(promise)](Result<Unit> result) mutable {
+          if (result.is_error()) {
+            return promise.set_error(result.move_as_error());
+          }
+          send_closure(actor_id, &BusinessConnectionManager::do_edit_message_media, std::move(message),
+                       std::move(promise));
+        }));
+  }
 
   upload_media(std::move(message), PromiseCreator::lambda([actor_id = actor_id(this), promise = std::move(promise)](
                                                               Result<UploadMediaResult> &&result) mutable {

@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2024
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -51,14 +51,9 @@ struct InlineKeyboardButton {
     UrlAuth,
     CallbackWithPassword,
     User,
-    WebView
+    WebView,
+    Copy
   };
-
-  static constexpr int64 USERS_MASK = 1;
-  static constexpr int64 BOTS_MASK = 2;
-  static constexpr int64 CHATS_MASK = 4;
-  static constexpr int64 BROADCASTS_MASK = 8;
-  static constexpr int64 FULL_MASK = USERS_MASK | BOTS_MASK | CHATS_MASK | BROADCASTS_MASK;
 
   Type type;
   int64 id = 0;    // UrlAuth: button_id or (2 * request_write_access - 1) * bot_user_id

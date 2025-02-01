@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2024
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -320,6 +320,31 @@ class ZeroEncodeBenchmark final : public td::Benchmark {
 
 TEST(Misc, bench_zero_encode) {
   td::bench(ZeroEncodeBenchmark());
+}
+
+static void test_vector_split(td::vector<char> v, std::size_t size, const td::vector<td::vector<char>> &expected) {
+  auto split = td::vector_split(std::move(v), size);
+  if (expected != split) {
+    LOG(FATAL) << "Receive " << split << ", expected " << expected << " in vector_split";
+  }
+}
+
+TEST(Misc, vector_split) {
+  test_vector_split({}, 1, {});
+  test_vector_split({}, 2, {});
+  test_vector_split({'1'}, 1, {{'1'}});
+  test_vector_split({'1'}, 2, {{'1'}});
+  td::vector<char> v{'1', '2', '3', '4', '5', '6'};
+  test_vector_split(v, 1, {{'1'}, {'2'}, {'3'}, {'4'}, {'5'}, {'6'}});
+  test_vector_split(v, 2, {{'1', '2'}, {'3', '4'}, {'5', '6'}});
+  test_vector_split(v, 3, {{'1', '2', '3'}, {'4', '5', '6'}});
+  test_vector_split(v, 4, {{'1', '2', '3', '4'}, {'5', '6'}});
+  test_vector_split(v, 5, {{'1', '2', '3', '4', '5'}, {'6'}});
+  test_vector_split(v, 6, {v});
+  test_vector_split(v, 7, {v});
+  test_vector_split(v, 107, {v});
+  v.push_back('7');
+  test_vector_split(v, 2, {{'1', '2'}, {'3', '4'}, {'5', '6'}, {'7'}});
 }
 
 template <class T>

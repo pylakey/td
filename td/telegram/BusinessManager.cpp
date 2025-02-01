@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2024
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -207,8 +207,8 @@ class GetBusinessChatLinksQuery final : public Td::ResultHandler {
     LOG(INFO) << "Receive result for GetBusinessChatLinksQuery: " << to_string(ptr);
     td_->user_manager_->on_get_users(std::move(ptr->users_), "GetBusinessChatLinksQuery");
     td_->chat_manager_->on_get_chats(std::move(ptr->chats_), "GetBusinessChatLinksQuery");
-    promise_.set_value(
-        BusinessChatLinks(td_->user_manager_.get(), std::move(ptr->links_)).get_business_chat_links_object());
+    promise_.set_value(BusinessChatLinks(td_->user_manager_.get(), std::move(ptr->links_))
+                           .get_business_chat_links_object(td_->user_manager_.get()));
   }
 
   void on_error(Status status) final {
@@ -238,7 +238,8 @@ class CreateBusinessChatLinkQuery final : public Td::ResultHandler {
 
     auto ptr = result_ptr.move_as_ok();
     LOG(INFO) << "Receive result for CreateBusinessChatLinkQuery: " << to_string(ptr);
-    promise_.set_value(BusinessChatLink(td_->user_manager_.get(), std::move(ptr)).get_business_chat_link_object());
+    promise_.set_value(BusinessChatLink(td_->user_manager_.get(), std::move(ptr))
+                           .get_business_chat_link_object(td_->user_manager_.get()));
   }
 
   void on_error(Status status) final {
@@ -269,7 +270,8 @@ class EditBusinessChatLinkQuery final : public Td::ResultHandler {
 
     auto ptr = result_ptr.move_as_ok();
     LOG(INFO) << "Receive result for EditBusinessChatLinkQuery: " << to_string(ptr);
-    promise_.set_value(BusinessChatLink(td_->user_manager_.get(), std::move(ptr)).get_business_chat_link_object());
+    promise_.set_value(BusinessChatLink(td_->user_manager_.get(), std::move(ptr))
+                           .get_business_chat_link_object(td_->user_manager_.get()));
   }
 
   void on_error(Status status) final {
@@ -343,7 +345,7 @@ class ResolveBusinessChatLinkQuery final : public Td::ResultHandler {
 
     promise_.set_value(td_api::make_object<td_api::businessChatLinkInfo>(
         td_->dialog_manager_->get_chat_id_object(dialog_id, "businessChatLinkInfo"),
-        get_formatted_text_object(text, true, -1)));
+        get_formatted_text_object(td_->user_manager_.get(), text, true, -1)));
   }
 
   void on_error(Status status) final {
@@ -379,7 +381,7 @@ class UpdateBusinessLocationQuery final : public Td::ResultHandler {
       return on_error(result_ptr.move_as_error());
     }
 
-    td_->user_manager_->on_update_user_location(td_->user_manager_->get_my_id(), std::move(location_));
+    td_->user_manager_->on_update_my_user_location(std::move(location_));
 
     promise_.set_value(Unit());
   }
@@ -413,7 +415,7 @@ class UpdateBusinessWorkHoursQuery final : public Td::ResultHandler {
       return on_error(result_ptr.move_as_error());
     }
 
-    td_->user_manager_->on_update_user_work_hours(td_->user_manager_->get_my_id(), std::move(work_hours_));
+    td_->user_manager_->on_update_my_user_work_hours(std::move(work_hours_));
 
     promise_.set_value(Unit());
   }
@@ -448,7 +450,7 @@ class UpdateBusinessGreetingMessageQuery final : public Td::ResultHandler {
       return on_error(result_ptr.move_as_error());
     }
 
-    td_->user_manager_->on_update_user_greeting_message(td_->user_manager_->get_my_id(), std::move(greeting_message_));
+    td_->user_manager_->on_update_my_user_greeting_message(std::move(greeting_message_));
 
     promise_.set_value(Unit());
   }
@@ -483,7 +485,7 @@ class UpdateBusinessAwayMessageQuery final : public Td::ResultHandler {
       return on_error(result_ptr.move_as_error());
     }
 
-    td_->user_manager_->on_update_user_away_message(td_->user_manager_->get_my_id(), std::move(away_message_));
+    td_->user_manager_->on_update_my_user_away_message(std::move(away_message_));
 
     promise_.set_value(Unit());
   }
@@ -518,7 +520,7 @@ class UpdateBusinessIntroQuery final : public Td::ResultHandler {
       return on_error(result_ptr.move_as_error());
     }
 
-    td_->user_manager_->on_update_user_intro(td_->user_manager_->get_my_id(), std::move(intro_));
+    td_->user_manager_->on_update_my_user_intro(std::move(intro_));
 
     promise_.set_value(Unit());
   }

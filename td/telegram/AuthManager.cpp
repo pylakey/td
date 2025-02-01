@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2024
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -19,8 +19,10 @@
 #include "td/telegram/net/NetQueryDispatcher.h"
 #include "td/telegram/NewPasswordState.h"
 #include "td/telegram/NotificationManager.h"
+#include "td/telegram/OnlineManager.h"
 #include "td/telegram/OptionManager.h"
 #include "td/telegram/PasswordManager.h"
+#include "td/telegram/PromoDataManager.h"
 #include "td/telegram/ReactionManager.h"
 #include "td/telegram/SendCodeHelper.hpp"
 #include "td/telegram/StateManager.h"
@@ -28,6 +30,8 @@
 #include "td/telegram/Td.h"
 #include "td/telegram/TdDb.h"
 #include "td/telegram/telegram_api.h"
+#include "td/telegram/TermsOfService.hpp"
+#include "td/telegram/TermsOfServiceManager.h"
 #include "td/telegram/ThemeManager.h"
 #include "td/telegram/TopDialogManager.h"
 #include "td/telegram/UpdatesManager.h"
@@ -748,7 +752,7 @@ void AuthManager::send_log_out_query() {
   // we can lose authorization while logging out, but still may need to resend the request,
   // so we pretend that it doesn't require authorization
   auto query = G()->net_query_creator().create_unauth(telegram_api::auth_logOut());
-  query->set_priority(1);
+  query->make_high_priority();
   start_net_query(NetQueryType::LogOut, std::move(query));
 }
 
@@ -1265,18 +1269,16 @@ void AuthManager::on_get_authorization(tl_object_ptr<telegram_api::auth_Authoriz
   td_->dialog_filter_manager_->on_authorization_success();  // must be after MessagesManager::on_authorization_success()
                                                             // to have folders created
   td_->notification_manager_->init();
+  td_->online_manager_->init();
+  td_->promo_data_manager_->init();
   td_->reaction_manager_->init();
   td_->stickers_manager_->init();
+  td_->terms_of_service_manager_->init();
   td_->theme_manager_->init();
   td_->top_dialog_manager_->init();
   td_->updates_manager_->get_difference("on_get_authorization");
   if (!is_bot()) {
-    td_->on_online_updated(false, true);
-    td_->schedule_get_terms_of_service(0);
-    td_->reload_promo_data();
     G()->td_db()->get_binlog_pmc()->set("fetched_marks_as_unread", "1");
-  } else {
-    td_->set_is_bot_online(true);
   }
   send_closure(G()->config_manager(), &ConfigManager::request_config, false);
   on_current_query_ok();

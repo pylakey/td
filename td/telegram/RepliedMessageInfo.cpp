@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2024
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -272,7 +272,7 @@ void RepliedMessageInfo::add_dependencies(Dependencies &dependencies, bool is_bo
 }
 
 td_api::object_ptr<td_api::messageReplyToMessage> RepliedMessageInfo::get_message_reply_to_message_object(
-    Td *td, DialogId dialog_id) const {
+    Td *td, DialogId dialog_id, MessageId message_id) const {
   if (dialog_id_.is_valid()) {
     dialog_id = dialog_id_;
   } else {
@@ -291,14 +291,15 @@ td_api::object_ptr<td_api::messageReplyToMessage> RepliedMessageInfo::get_messag
 
   td_api::object_ptr<td_api::MessageContent> content;
   if (content_ != nullptr) {
-    content = get_message_content_object(content_.get(), td, dialog_id, 0, false, true, -1, false, false);
+    content =
+        get_message_content_object(content_.get(), td, dialog_id, message_id, false, 0, false, true, -1, false, false);
     switch (content->get_id()) {
       case td_api::messageUnsupported::ID:
         content = nullptr;
         break;
       case td_api::messageText::ID: {
         const auto *message_text = static_cast<const td_api::messageText *>(content.get());
-        if (message_text->web_page_ == nullptr && message_text->link_preview_options_ == nullptr) {
+        if (message_text->link_preview_ == nullptr && message_text->link_preview_options_ == nullptr) {
           content = nullptr;
         }
         break;
@@ -309,7 +310,8 @@ td_api::object_ptr<td_api::messageReplyToMessage> RepliedMessageInfo::get_messag
     }
   }
 
-  return td_api::make_object<td_api::messageReplyToMessage>(chat_id, message_id_.get(), quote_.get_text_quote_object(),
+  return td_api::make_object<td_api::messageReplyToMessage>(chat_id, message_id_.get(),
+                                                            quote_.get_text_quote_object(td->user_manager_.get()),
                                                             std::move(origin), origin_date_, std::move(content));
 }
 

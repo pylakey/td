@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2024
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -23,6 +23,7 @@ void ChatReactions::store(StorerT &storer) const {
   STORE_FLAG(allow_all_custom_);
   STORE_FLAG(has_reactions);
   STORE_FLAG(has_reactions_limit);
+  STORE_FLAG(paid_reactions_available_);
   END_STORE_FLAGS();
   if (has_reactions) {
     td::store(reaction_types_, storer);
@@ -41,6 +42,7 @@ void ChatReactions::parse(ParserT &parser) {
   PARSE_FLAG(allow_all_custom_);
   PARSE_FLAG(has_reactions);
   PARSE_FLAG(has_reactions_limit);
+  PARSE_FLAG(paid_reactions_available_);
   END_PARSE_FLAGS();
   if (has_reactions) {
     td::parse(reaction_types_, parser);

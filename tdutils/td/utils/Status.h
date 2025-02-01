@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2024
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -368,7 +368,7 @@ class Status {
   }
 
   Status clone_static(int code) const TD_WARN_UNUSED_RESULT {
-    LOG_CHECK(ptr_ != nullptr && get_info().static_flag) << ptr_.get() << ' ' << code;
+    LOG_CHECK(ptr_ != nullptr && get_info().static_flag) << static_cast<const void *>(ptr_.get()) << ' ' << code;
     Status result;
     result.ptr_ = std::unique_ptr<char[], Deleter>(ptr_.get());
     return result;

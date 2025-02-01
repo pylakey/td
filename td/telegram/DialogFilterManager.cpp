@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2024
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -17,6 +17,8 @@
 #include "td/telegram/Global.h"
 #include "td/telegram/LinkManager.h"
 #include "td/telegram/logevent/LogEvent.h"
+#include "td/telegram/MessageEntity.h"
+#include "td/telegram/MessageEntity.hpp"
 #include "td/telegram/MessagesManager.h"
 #include "td/telegram/OptionManager.h"
 #include "td/telegram/Td.h"
@@ -1006,15 +1008,12 @@ void DialogFilterManager::load_dialog_filter(const DialogFilter *dialog_filter, 
 void DialogFilterManager::load_dialog_filter_dialogs(DialogFilterId dialog_filter_id,
                                                      vector<InputDialogId> &&input_dialog_ids,
                                                      Promise<Unit> &&promise) {
-  const size_t MAX_SLICE_SIZE = 100;  // server side limit
+  const size_t MAX_SLICE_SIZE = 100;  // server-side limit
   MultiPromiseActorSafe mpas{"GetFilterDialogsOnServerMultiPromiseActor"};
   mpas.add_promise(std::move(promise));
   auto lock = mpas.get_promise();
 
-  for (size_t i = 0; i < input_dialog_ids.size(); i += MAX_SLICE_SIZE) {
-    auto end_i = i + MAX_SLICE_SIZE;
-    auto end = end_i < input_dialog_ids.size() ? input_dialog_ids.begin() + end_i : input_dialog_ids.end();
-    vector<InputDialogId> slice_input_dialog_ids = {input_dialog_ids.begin() + i, end};
+  for (auto &slice_input_dialog_ids : vector_split(std::move(input_dialog_ids), MAX_SLICE_SIZE)) {
     auto query_promise = PromiseCreator::lambda([actor_id = actor_id(this), dialog_filter_id,
                                                  dialog_ids = InputDialogId::get_dialog_ids(slice_input_dialog_ids),
                                                  promise = mpas.get_promise()](Result<Unit> &&result) mutable {
@@ -2119,8 +2118,13 @@ void DialogFilterManager::on_get_chatlist_invite(
       if (icon_name.empty()) {
         icon_name = "Custom";
       }
+
+      auto title = get_formatted_text(nullptr, std::move(invite->title_), true, false, "chatlistInvite");
+      keep_only_custom_emoji(title);
+      auto name = td_api::make_object<td_api::chatFolderName>(get_formatted_text_object(nullptr, title, true, -1),
+                                                              !invite->title_noanimate_);
       info = td_api::make_object<td_api::chatFolderInfo>(
-          0, invite->title_, td_api::make_object<td_api::chatFolderIcon>(icon_name), -1, true, false);
+          0, std::move(name), td_api::make_object<td_api::chatFolderIcon>(icon_name), -1, true, false);
       missing_peers = std::move(invite->peers_);
       chats = std::move(invite->chats_);
       users = std::move(invite->users_);

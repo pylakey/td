@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2024
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -23,6 +23,7 @@ struct ChatReactions {
   bool allow_all_regular_ = false;  // implies empty reaction_types_
   bool allow_all_custom_ = false;   // implies allow_all_regular_
   int32 reactions_limit_ = 0;
+  bool paid_reactions_available_ = false;
 
   ChatReactions() = default;
 
@@ -32,7 +33,8 @@ struct ChatReactions {
     return result;
   }
 
-  ChatReactions(telegram_api::object_ptr<telegram_api::ChatReactions> &&chat_reactions_ptr, int32 reactions_limit);
+  ChatReactions(telegram_api::object_ptr<telegram_api::ChatReactions> &&chat_reactions_ptr, int32 reactions_limit,
+                bool paid_reactions_available);
 
   ChatReactions(td_api::object_ptr<td_api::ChatAvailableReactions> &&chat_reactions_ptr, bool allow_all_custom);
 
@@ -43,6 +45,8 @@ struct ChatReactions {
   ChatReactions get_active_reactions(
       const FlatHashMap<ReactionType, size_t, ReactionTypeHash> &active_reaction_pos) const;
 
+  void fix_broadcast_reactions(const vector<ReactionType> &active_reaction_types);
+
   bool is_allowed_reaction_type(const ReactionType &reaction) const;
 
   telegram_api::object_ptr<telegram_api::ChatReactions> get_input_chat_reactions() const;
@@ -50,8 +54,12 @@ struct ChatReactions {
   td_api::object_ptr<td_api::ChatAvailableReactions> get_chat_available_reactions_object(Td *td) const;
 
   bool empty() const {
-    return reaction_types_.empty() && !allow_all_regular_;
+    return reaction_types_.empty() && !allow_all_regular_ && !paid_reactions_available_;
   }
+
+  void ignore_non_paid_reaction_types();
+
+  bool remove_paid_reactions();
 
   template <class StorerT>
   void store(StorerT &storer) const;

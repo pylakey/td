@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2024
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -52,7 +52,7 @@
 namespace td {
 
 class UploadRingtoneQuery final : public Td::ResultHandler {
-  FileId file_id_;
+  FileUploadId file_upload_id_;
   Promise<telegram_api::object_ptr<telegram_api::Document>> promise_;
 
  public:
@@ -60,10 +60,10 @@ class UploadRingtoneQuery final : public Td::ResultHandler {
       : promise_(std::move(promise)) {
   }
 
-  void send(FileId file_id, tl_object_ptr<telegram_api::InputFile> &&input_file, const string &file_name,
-            const string &mime_type) {
+  void send(FileUploadId file_upload_id, telegram_api::object_ptr<telegram_api::InputFile> &&input_file,
+            const string &file_name, const string &mime_type) {
     CHECK(input_file != nullptr);
-    file_id_ = file_id;
+    file_upload_id_ = file_upload_id;
 
     send_query(G()->net_query_creator().create(
         telegram_api::account_uploadRingtone(std::move(input_file), file_name, mime_type), {{"ringtone"}}));
@@ -79,7 +79,7 @@ class UploadRingtoneQuery final : public Td::ResultHandler {
     LOG(INFO) << "Receive result for UploadRingtoneQuery: " << to_string(result);
     promise_.set_value(std::move(result));
 
-    td_->file_manager_->delete_partial_remote_location(file_id_);
+    td_->file_manager_->delete_partial_remote_location(file_upload_id_);
   }
 
   void on_error(Status status) final {
@@ -91,7 +91,7 @@ class UploadRingtoneQuery final : public Td::ResultHandler {
       // TODO reupload the file
     }
 
-    td_->file_manager_->delete_partial_remote_location(file_id_);
+    td_->file_manager_->delete_partial_remote_location(file_upload_id_);
     td_->notification_settings_manager_->reload_saved_ringtones(Auto());
     promise_.set_error(std::move(status));
   }
@@ -569,19 +569,14 @@ class ResetNotifySettingsQuery final : public Td::ResultHandler {
 
 class NotificationSettingsManager::UploadRingtoneCallback final : public FileManager::UploadCallback {
  public:
-  void on_upload_ok(FileId file_id, tl_object_ptr<telegram_api::InputFile> input_file) final {
-    send_closure_later(G()->notification_settings_manager(), &NotificationSettingsManager::on_upload_ringtone, file_id,
-                       std::move(input_file));
+  void on_upload_ok(FileUploadId file_upload_id, telegram_api::object_ptr<telegram_api::InputFile> input_file) final {
+    send_closure_later(G()->notification_settings_manager(), &NotificationSettingsManager::on_upload_ringtone,
+                       file_upload_id, std::move(input_file));
   }
-  void on_upload_encrypted_ok(FileId file_id, tl_object_ptr<telegram_api::InputEncryptedFile> input_file) final {
-    UNREACHABLE();
-  }
-  void on_upload_secure_ok(FileId file_id, tl_object_ptr<telegram_api::InputSecureFile> input_file) final {
-    UNREACHABLE();
-  }
-  void on_upload_error(FileId file_id, Status error) final {
+
+  void on_upload_error(FileUploadId file_upload_id, Status error) final {
     send_closure_later(G()->notification_settings_manager(), &NotificationSettingsManager::on_upload_ringtone_error,
-                       file_id, std::move(error));
+                       file_upload_id, std::move(error));
   }
 };
 
@@ -1009,8 +1004,9 @@ FileId NotificationSettingsManager::get_saved_ringtone(int64 ringtone_id, Promis
     auto file_view = td_->file_manager_->get_file_view(file_id);
     CHECK(!file_view.empty());
     CHECK(file_view.get_type() == FileType::Ringtone);
-    CHECK(file_view.has_remote_location());
-    if (file_view.remote_location().get_id() == ringtone_id) {
+    const auto *full_remote_location = file_view.get_full_remote_location();
+    CHECK(full_remote_location != nullptr);
+    if (full_remote_location->get_id() == ringtone_id) {
       return file_view.get_main_file_id();
     }
   }
@@ -1035,11 +1031,12 @@ void NotificationSettingsManager::send_save_ringtone_query(
   // TODO log event
   auto file_view = td_->file_manager_->get_file_view(ringtone_file_id);
   CHECK(!file_view.empty());
-  CHECK(file_view.has_remote_location());
-  CHECK(file_view.remote_location().is_document());
-  CHECK(!file_view.remote_location().is_web());
+  const auto *full_remote_location = file_view.get_full_remote_location();
+  CHECK(full_remote_location != nullptr);
+  CHECK(full_remote_location->is_document());
+  CHECK(!full_remote_location->is_web());
   td_->create_handler<SaveRingtoneQuery>(std::move(promise))
-      ->send(ringtone_file_id, file_view.remote_location().as_input_document(), unsave);
+      ->send(ringtone_file_id, full_remote_location->as_input_document(), unsave);
 }
 
 void NotificationSettingsManager::add_saved_ringtone(td_api::object_ptr<td_api::InputFile> &&input_file,
@@ -1081,9 +1078,10 @@ void NotificationSettingsManager::add_saved_ringtone(td_api::object_ptr<td_api::
   if (duration > td_->option_manager_->get_option_integer("notification_sound_duration_max")) {
     return promise.set_error(Status::Error(400, "Notification sound is too long"));
   }
-  if (file_view.has_remote_location() && !file_view.is_encrypted()) {
-    CHECK(file_view.remote_location().is_document());
-    if (file_view.main_remote_location().is_web()) {
+  const auto *main_remote_location = file_view.get_main_remote_location();
+  if (main_remote_location != nullptr && !file_view.is_encrypted()) {
+    CHECK(main_remote_location->is_document());
+    if (main_remote_location->is_web()) {
       return promise.set_error(Status::Error(400, "Can't use web document as notification sound"));
     }
 
@@ -1092,7 +1090,7 @@ void NotificationSettingsManager::add_saved_ringtone(td_api::object_ptr<td_api::
       if (file_type != FileType::Audio && file_type != FileType::VoiceNote) {
         return promise.set_error(Status::Error(400, "Unsupported file specified"));
       }
-      auto &remote = file_view.main_remote_location();
+      auto &remote = *main_remote_location;
       ringtone_file_id = td_->file_manager_->register_remote(
           FullRemoteFileLocation(FileType::Ringtone, remote.get_id(), remote.get_access_hash(), remote.get_dc_id(),
                                  remote.get_file_reference().str()),
@@ -1125,56 +1123,53 @@ void NotificationSettingsManager::add_saved_ringtone(td_api::object_ptr<td_api::
 
   file_id = td_->file_manager_->copy_file_id(file_id, FileType::Ringtone, DialogId(), "add_saved_ringtone");
 
-  upload_ringtone(td_->file_manager_->dup_file_id(file_id, "add_saved_ringtone"), false, std::move(promise));
+  upload_ringtone({file_id, FileManager::get_internal_upload_id()}, false, std::move(promise));
 }
 
-void NotificationSettingsManager::upload_ringtone(FileId file_id, bool is_reupload,
+void NotificationSettingsManager::upload_ringtone(FileUploadId file_upload_id, bool is_reupload,
                                                   Promise<td_api::object_ptr<td_api::notificationSound>> &&promise,
                                                   vector<int> bad_parts) {
-  CHECK(file_id.is_valid());
-  LOG(INFO) << "Ask to upload ringtone " << file_id;
+  CHECK(file_upload_id.is_valid());
+  LOG(INFO) << "Ask to upload ringtone " << file_upload_id;
   bool is_inserted =
-      being_uploaded_ringtones_.emplace(file_id, UploadedRingtone{is_reupload, std::move(promise)}).second;
+      being_uploaded_ringtones_.emplace(file_upload_id, UploadedRingtone{is_reupload, std::move(promise)}).second;
   CHECK(is_inserted);
   // TODO use force_reupload if is_reupload
-  td_->file_manager_->resume_upload(file_id, std::move(bad_parts), upload_ringtone_callback_, 32, 0);
+  td_->file_manager_->resume_upload(file_upload_id, std::move(bad_parts), upload_ringtone_callback_, 32, 0);
 }
 
-void NotificationSettingsManager::on_upload_ringtone(FileId file_id,
-                                                     tl_object_ptr<telegram_api::InputFile> input_file) {
-  LOG(INFO) << "File " << file_id << " has been uploaded";
+void NotificationSettingsManager::on_upload_ringtone(FileUploadId file_upload_id,
+                                                     telegram_api::object_ptr<telegram_api::InputFile> input_file) {
+  LOG(INFO) << "Ringtone " << file_upload_id << " has been uploaded";
 
-  auto it = being_uploaded_ringtones_.find(file_id);
-  if (it == being_uploaded_ringtones_.end()) {
-    // just in case, as in on_upload_media
-    return;
-  }
-
+  auto it = being_uploaded_ringtones_.find(file_upload_id);
+  CHECK(it != being_uploaded_ringtones_.end());
   bool is_reupload = it->second.is_reupload;
   auto promise = std::move(it->second.promise);
-
   being_uploaded_ringtones_.erase(it);
 
-  FileView file_view = td_->file_manager_->get_file_view(file_id);
+  FileView file_view = td_->file_manager_->get_file_view(file_upload_id.get_file_id());
   CHECK(!file_view.is_encrypted());
   CHECK(file_view.get_type() == FileType::Ringtone);
-  if (input_file == nullptr && file_view.has_remote_location()) {
-    if (file_view.main_remote_location().is_web()) {
+  const auto *main_remote_location = file_view.get_main_remote_location();
+  if (input_file == nullptr && main_remote_location != nullptr) {
+    if (main_remote_location->is_web()) {
       return promise.set_error(Status::Error(400, "Can't use web document as notification sound"));
     }
     if (is_reupload) {
       return promise.set_error(Status::Error(400, "Failed to reupload the file"));
     }
 
+    auto main_file_id = file_view.get_main_file_id();
     send_save_ringtone_query(
-        file_view.get_main_file_id(), false,
+        main_file_id, false,
         PromiseCreator::lambda(
-            [actor_id = actor_id(this), file_id = file_view.get_main_file_id(), promise = std::move(promise)](
+            [actor_id = actor_id(this), main_file_id, promise = std::move(promise)](
                 Result<telegram_api::object_ptr<telegram_api::account_SavedRingtone>> &&result) mutable {
               if (result.is_error()) {
                 promise.set_error(result.move_as_error());
               } else {
-                send_closure(actor_id, &NotificationSettingsManager::on_add_saved_ringtone, file_id,
+                send_closure(actor_id, &NotificationSettingsManager::on_add_saved_ringtone, main_file_id,
                              result.move_as_ok(), std::move(promise));
               }
             }));
@@ -1197,21 +1192,16 @@ void NotificationSettingsManager::on_upload_ringtone(FileId file_id,
       });
 
   td_->create_handler<UploadRingtoneQuery>(std::move(query_promise))
-      ->send(file_id, std::move(input_file), file_name, mime_type);
+      ->send(file_upload_id, std::move(input_file), file_name, mime_type);
 }
 
-void NotificationSettingsManager::on_upload_ringtone_error(FileId file_id, Status status) {
-  LOG(INFO) << "File " << file_id << " has upload error " << status;
+void NotificationSettingsManager::on_upload_ringtone_error(FileUploadId file_upload_id, Status status) {
+  LOG(INFO) << "Ringtone " << file_upload_id << " has upload error " << status;
   CHECK(status.is_error());
 
-  auto it = being_uploaded_ringtones_.find(file_id);
-  if (it == being_uploaded_ringtones_.end()) {
-    // just in case
-    return;
-  }
-
+  auto it = being_uploaded_ringtones_.find(file_upload_id);
+  CHECK(it != being_uploaded_ringtones_.end());
   auto promise = std::move(it->second.promise);
-
   being_uploaded_ringtones_.erase(it);
 
   promise.set_error(std::move(status));
@@ -1273,8 +1263,9 @@ void NotificationSettingsManager::remove_saved_ringtone(int64 ringtone_id, Promi
     auto file_view = td_->file_manager_->get_file_view(file_id);
     CHECK(!file_view.empty());
     CHECK(file_view.get_type() == FileType::Ringtone);
-    CHECK(file_view.has_remote_location());
-    if (file_view.remote_location().get_id() == ringtone_id) {
+    const auto *full_remote_location = file_view.get_full_remote_location();
+    CHECK(full_remote_location != nullptr);
+    if (full_remote_location->get_id() == ringtone_id) {
       send_save_ringtone_query(
           file_view.get_main_file_id(), true,
           PromiseCreator::lambda(
@@ -1312,8 +1303,9 @@ void NotificationSettingsManager::on_remove_saved_ringtone(int64 ringtone_id, Pr
     auto file_view = td_->file_manager_->get_file_view(*it);
     CHECK(!file_view.empty());
     CHECK(file_view.get_type() == FileType::Ringtone);
-    CHECK(file_view.has_remote_location());
-    if (file_view.remote_location().get_id() == ringtone_id) {
+    const auto *full_remote_location = file_view.get_full_remote_location();
+    CHECK(full_remote_location != nullptr);
+    if (full_remote_location->get_id() == ringtone_id) {
       saved_ringtone_file_ids_.erase(it);
       saved_ringtone_hash_ = 0;
       on_saved_ringtones_updated(false);
@@ -1333,8 +1325,8 @@ Result<FileId> NotificationSettingsManager::get_ringtone(
   CHECK(document_id == telegram_api::document::ID);
 
   auto parsed_document =
-      td_->documents_manager_->on_get_document(move_tl_object_as<telegram_api::document>(ringtone), DialogId(), nullptr,
-                                               Document::Type::Audio, DocumentsManager::Subtype::Ringtone);
+      td_->documents_manager_->on_get_document(move_tl_object_as<telegram_api::document>(ringtone), DialogId(), false,
+                                               nullptr, Document::Type::Audio, DocumentsManager::Subtype::Ringtone);
   if (parsed_document.type != Document::Type::Audio) {
     return Status::Error("Receive ringtone of a wrong type");
   }
@@ -1366,7 +1358,7 @@ void NotificationSettingsManager::load_saved_ringtones(Promise<Unit> &&promise) 
       on_saved_ringtones_updated(true);
     }
 
-    // the promis must not be set synchronously
+    // the promise must not be set synchronously
     send_closure_later(actor_id(this), &NotificationSettingsManager::on_load_saved_ringtones, std::move(promise));
     reload_saved_ringtones(Auto());
   } else {
@@ -1483,8 +1475,9 @@ NotificationSettingsManager::get_update_saved_notification_sounds_object() const
     auto file_view = file_manager->get_file_view(file_id);
     CHECK(!file_view.empty());
     CHECK(file_view.get_type() == FileType::Ringtone);
-    CHECK(file_view.has_remote_location());
-    return file_view.remote_location().get_id();
+    const auto *full_remote_location = file_view.get_full_remote_location();
+    CHECK(full_remote_location != nullptr);
+    return full_remote_location->get_id();
   });
   return td_api::make_object<td_api::updateSavedNotificationSounds>(std::move(ringtone_ids));
 }
@@ -1505,7 +1498,7 @@ void NotificationSettingsManager::on_saved_ringtones_updated(bool from_database)
   std::sort(new_sorted_saved_ringtone_file_ids.begin(), new_sorted_saved_ringtone_file_ids.end());
   if (new_sorted_saved_ringtone_file_ids != sorted_saved_ringtone_file_ids_) {
     td_->file_manager_->change_files_source(get_saved_ringtones_file_source_id(), sorted_saved_ringtone_file_ids_,
-                                            new_sorted_saved_ringtone_file_ids);
+                                            new_sorted_saved_ringtone_file_ids, "on_saved_ringtones_updated");
     sorted_saved_ringtone_file_ids_ = std::move(new_sorted_saved_ringtone_file_ids);
   }
 
@@ -1639,10 +1632,6 @@ void NotificationSettingsManager::update_scope_notification_settings_on_server(N
       ->send(scope, *get_scope_notification_settings(scope));
 }
 
-void NotificationSettingsManager::reset_notify_settings(Promise<Unit> &&promise) {
-  td_->create_handler<ResetNotifySettingsQuery>(std::move(promise))->send();
-}
-
 Status NotificationSettingsManager::set_reaction_notification_settings(
     ReactionNotificationSettings &&notification_settings) {
   CHECK(!td_->auth_manager_->is_bot());
@@ -1708,6 +1697,43 @@ void NotificationSettingsManager::get_story_notification_settings_exceptions(
   td_->create_handler<GetStoryNotifySettingsExceptionsQuery>(std::move(promise))->send();
 }
 
+void NotificationSettingsManager::reset_all_notification_settings() {
+  CHECK(!td_->auth_manager_->is_bot());
+
+  td_->messages_manager_->reset_all_dialog_notification_settings();
+
+  reset_scope_notification_settings();
+
+  reset_all_notification_settings_on_server(0);
+}
+
+class NotificationSettingsManager::ResetAllNotificationSettingsOnServerLogEvent {
+ public:
+  template <class StorerT>
+  void store(StorerT &storer) const {
+  }
+
+  template <class ParserT>
+  void parse(ParserT &parser) {
+  }
+};
+
+uint64 NotificationSettingsManager::save_reset_all_notification_settings_on_server_log_event() {
+  ResetAllNotificationSettingsOnServerLogEvent log_event;
+  return binlog_add(G()->td_db()->get_binlog(), LogEvent::HandlerType::ResetAllNotificationSettingsOnServer,
+                    get_log_event_storer(log_event));
+}
+
+void NotificationSettingsManager::reset_all_notification_settings_on_server(uint64 log_event_id) {
+  CHECK(!td_->auth_manager_->is_bot());
+  if (log_event_id == 0) {
+    log_event_id = save_reset_all_notification_settings_on_server_log_event();
+  }
+
+  LOG(INFO) << "Reset all notification settings";
+  td_->create_handler<ResetNotifySettingsQuery>(get_erase_log_event_promise(log_event_id))->send();
+}
+
 void NotificationSettingsManager::on_binlog_events(vector<BinlogEvent> &&events) {
   if (G()->close_flag()) {
     return;
@@ -1715,6 +1741,13 @@ void NotificationSettingsManager::on_binlog_events(vector<BinlogEvent> &&events)
   for (auto &event : events) {
     CHECK(event.id_ != 0);
     switch (event.type_) {
+      case LogEvent::HandlerType::ResetAllNotificationSettingsOnServer: {
+        ResetAllNotificationSettingsOnServerLogEvent log_event;
+        log_event_parse(log_event, event.get_data()).ensure();
+
+        reset_all_notification_settings_on_server(event.id_);
+        break;
+      }
       case LogEvent::HandlerType::UpdateScopeNotificationSettingsOnServer: {
         UpdateScopeNotificationSettingsOnServerLogEvent log_event;
         log_event_parse(log_event, event.get_data()).ensure();

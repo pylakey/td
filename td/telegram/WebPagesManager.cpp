@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2024
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -21,12 +21,14 @@
 #include "td/telegram/files/FileManager.h"
 #include "td/telegram/files/FileSourceId.h"
 #include "td/telegram/Global.h"
+#include "td/telegram/LinkManager.h"
 #include "td/telegram/logevent/LogEvent.h"
 #include "td/telegram/MessageEntity.h"
 #include "td/telegram/MessagesManager.h"
 #include "td/telegram/Photo.h"
 #include "td/telegram/PhotoFormat.h"
 #include "td/telegram/QuickReplyManager.h"
+#include "td/telegram/StarGift.h"
 #include "td/telegram/StickerFormat.h"
 #include "td/telegram/StickersManager.h"
 #include "td/telegram/StickersManager.hpp"
@@ -36,6 +38,8 @@
 #include "td/telegram/Td.h"
 #include "td/telegram/TdDb.h"
 #include "td/telegram/telegram_api.h"
+#include "td/telegram/ThemeSettings.h"
+#include "td/telegram/ThemeSettings.hpp"
 #include "td/telegram/UserManager.h"
 #include "td/telegram/VideoNotesManager.h"
 #include "td/telegram/VideosManager.h"
@@ -65,11 +69,11 @@
 namespace td {
 
 class GetWebPagePreviewQuery final : public Td::ResultHandler {
-  Promise<td_api::object_ptr<td_api::webPage>> promise_;
+  Promise<td_api::object_ptr<td_api::linkPreview>> promise_;
   unique_ptr<WebPagesManager::GetWebPagePreviewOptions> options_;
 
  public:
-  explicit GetWebPagePreviewQuery(Promise<td_api::object_ptr<td_api::webPage>> &&promise)
+  explicit GetWebPagePreviewQuery(Promise<td_api::object_ptr<td_api::linkPreview>> &&promise)
       : promise_(std::move(promise)) {
   }
 
@@ -94,7 +98,8 @@ class GetWebPagePreviewQuery final : public Td::ResultHandler {
 
     auto ptr = result_ptr.move_as_ok();
     LOG(INFO) << "Receive result for GetWebPagePreviewQuery: " << to_string(ptr);
-    td_->web_pages_manager_->on_get_web_page_preview(std::move(options_), std::move(ptr), std::move(promise_));
+    td_->user_manager_->on_get_users(std::move(ptr->users_), "GetWebPagePreviewQuery");
+    td_->web_pages_manager_->on_get_web_page_preview(std::move(options_), std::move(ptr->media_), std::move(promise_));
   }
 
   void on_error(Status status) final {
@@ -243,10 +248,14 @@ class WebPagesManager::WebPage {
   int32 duration_ = 0;
   string author_;
   bool has_large_media_ = false;
+  mutable bool is_album_ = false;
+  mutable bool is_album_checked_ = false;
   Document document_;
   vector<Document> documents_;
+  ThemeSettings theme_settings_;
   vector<StoryFullId> story_full_ids_;
   vector<FileId> sticker_ids_;
+  vector<StarGift> star_gifts_;
   WebPageInstantView instant_view_;
 
   FileSourceId file_source_id_;
@@ -272,6 +281,8 @@ class WebPagesManager::WebPage {
     bool has_documents = !documents_.empty();
     bool has_story_full_ids = !story_full_ids_.empty();
     bool has_sticker_ids = !sticker_ids_.empty();
+    bool has_theme_settings = !theme_settings_.is_empty();
+    bool has_star_gifts = !star_gifts_.empty();
     BEGIN_STORE_FLAGS();
     STORE_FLAG(has_type);
     STORE_FLAG(has_site_name);
@@ -290,6 +301,8 @@ class WebPagesManager::WebPage {
     STORE_FLAG(has_story_full_ids);
     STORE_FLAG(has_large_media_);
     STORE_FLAG(has_sticker_ids);
+    STORE_FLAG(has_theme_settings);
+    STORE_FLAG(has_star_gifts);
     END_STORE_FLAGS();
 
     store(url_, storer);
@@ -338,6 +351,12 @@ class WebPagesManager::WebPage {
         td->stickers_manager_->store_sticker(sticker_id, false, storer, "WebPage");
       }
     }
+    if (has_theme_settings) {
+      store(theme_settings_, storer);
+    }
+    if (has_star_gifts) {
+      store(star_gifts_, storer);
+    }
   }
 
   template <class ParserT>
@@ -359,6 +378,8 @@ class WebPagesManager::WebPage {
     bool has_documents;
     bool has_story_full_ids;
     bool has_sticker_ids;
+    bool has_theme_settings;
+    bool has_star_gifts;
     BEGIN_PARSE_FLAGS();
     PARSE_FLAG(has_type);
     PARSE_FLAG(has_site_name);
@@ -377,6 +398,8 @@ class WebPagesManager::WebPage {
     PARSE_FLAG(has_story_full_ids);
     PARSE_FLAG(has_large_media_);
     PARSE_FLAG(has_sticker_ids);
+    PARSE_FLAG(has_theme_settings);
+    PARSE_FLAG(has_star_gifts);
     END_PARSE_FLAGS();
 
     parse(url_, parser);
@@ -434,6 +457,12 @@ class WebPagesManager::WebPage {
         }
       }
     }
+    if (has_theme_settings) {
+      parse(theme_settings_, parser);
+    }
+    if (has_star_gifts) {
+      parse(star_gifts_, parser);
+    }
 
     if (has_instant_view) {
       instant_view_.is_empty_ = false;
@@ -450,8 +479,9 @@ class WebPagesManager::WebPage {
            lhs.embed_type_ == rhs.embed_type_ && lhs.embed_dimensions_ == rhs.embed_dimensions_ &&
            lhs.duration_ == rhs.duration_ && lhs.author_ == rhs.author_ &&
            lhs.has_large_media_ == rhs.has_large_media_ && lhs.document_ == rhs.document_ &&
-           lhs.documents_ == rhs.documents_ && lhs.story_full_ids_ == rhs.story_full_ids_ &&
-           lhs.sticker_ids_ == rhs.sticker_ids_ && lhs.instant_view_.is_empty_ == rhs.instant_view_.is_empty_ &&
+           lhs.documents_ == rhs.documents_ && lhs.theme_settings_ == rhs.theme_settings_ &&
+           lhs.story_full_ids_ == rhs.story_full_ids_ && lhs.sticker_ids_ == rhs.sticker_ids_ &&
+           lhs.star_gifts_ == rhs.star_gifts_ && lhs.instant_view_.is_empty_ == rhs.instant_view_.is_empty_ &&
            lhs.instant_view_.is_v2_ == rhs.instant_view_.is_v2_;
   }
 };
@@ -517,7 +547,8 @@ WebPageId WebPagesManager::on_get_web_page(tl_object_ptr<telegram_api::WebPage> 
         }
         if (web_page_to_delete->file_source_id_.is_valid()) {
           td_->file_manager_->change_files_source(web_page_to_delete->file_source_id_,
-                                                  get_web_page_file_ids(web_page_to_delete), vector<FileId>());
+                                                  get_web_page_file_ids(web_page_to_delete), vector<FileId>(),
+                                                  "on_get_web_page");
         }
         web_pages_.erase(web_page_id);
       }
@@ -578,7 +609,7 @@ WebPageId WebPagesManager::on_get_web_page(tl_object_ptr<telegram_api::WebPage> 
         int32 document_id = web_page->document_->get_id();
         if (document_id == telegram_api::document::ID) {
           auto parsed_document = td_->documents_manager_->on_get_document(
-              move_tl_object_as<telegram_api::document>(web_page->document_), owner_dialog_id);
+              move_tl_object_as<telegram_api::document>(web_page->document_), owner_dialog_id, false);
           page->document_ = std::move(parsed_document);
         }
       }
@@ -591,13 +622,16 @@ WebPageId WebPagesManager::on_get_web_page(tl_object_ptr<telegram_api::WebPage> 
               int32 document_id = document->get_id();
               if (document_id == telegram_api::document::ID) {
                 auto parsed_document = td_->documents_manager_->on_get_document(
-                    move_tl_object_as<telegram_api::document>(document), owner_dialog_id);
+                    move_tl_object_as<telegram_api::document>(document), owner_dialog_id, false);
                 if (!parsed_document.empty()) {
                   page->documents_.push_back(std::move(parsed_document));
                 }
               }
             }
-            // TODO attribute->settings_
+            page->theme_settings_ = ThemeSettings(td_, std::move(attribute->settings_));
+            if (page->type_ != "telegram_theme") {
+              LOG(ERROR) << "Receive webPageAttributeTheme for " << page->type_;
+            }
             break;
           }
           case telegram_api::webPageAttributeStory::ID: {
@@ -617,6 +651,9 @@ WebPageId WebPagesManager::on_get_web_page(tl_object_ptr<telegram_api::WebPage> 
             }
             td_->dialog_manager_->force_create_dialog(dialog_id, "webPageAttributeStory");
             page->story_full_ids_.push_back(story_full_id);
+            if (page->type_ != "telegram_story") {
+              LOG(ERROR) << "Receive webPageAttributeStory for " << page->type_;
+            }
             break;
           }
           case telegram_api::webPageAttributeStickerSet::ID: {
@@ -632,6 +669,22 @@ WebPageId WebPagesManager::on_get_web_page(tl_object_ptr<telegram_api::WebPage> 
               if (sticker_id.is_valid() && page->sticker_ids_.size() < 4) {
                 page->sticker_ids_.push_back(sticker_id);
               }
+            }
+            if (page->type_ != "telegram_stickerset") {
+              LOG(ERROR) << "Receive webPageAttributeStickerSet for " << page->type_;
+            }
+            break;
+          }
+          case telegram_api::webPageAttributeUniqueStarGift::ID: {
+            auto attribute = telegram_api::move_object_as<telegram_api::webPageAttributeUniqueStarGift>(attribute_ptr);
+            StarGift star_gift(td_, std::move(attribute->gift_), true);
+            if (!star_gift.is_valid() || !star_gift.is_unique()) {
+              LOG(ERROR) << "Receive invalid upgraded gift";
+              break;
+            }
+            page->star_gifts_.push_back(std::move(star_gift));
+            if (page->type_ != "telegram_nft") {
+              LOG(ERROR) << "Receive webPageAttributeUniqueStarGift for " << page->type_;
             }
             break;
           }
@@ -666,8 +719,17 @@ void WebPagesManager::update_web_page(unique_ptr<WebPage> web_page, WebPageId we
       for (auto story_full_id : web_page->story_full_ids_) {
         dependencies.add(story_full_id);
       }
-      if (!dependencies.resolve_force(td_, "update_web_page")) {
+      if (!dependencies.resolve_force(td_, "update_web_page 1")) {
         web_page->story_full_ids_ = {};
+      }
+    }
+    if (!web_page->star_gifts_.empty()) {
+      Dependencies dependencies;
+      for (const auto &star_gift : web_page->star_gifts_) {
+        star_gift.add_dependencies(dependencies);
+      }
+      if (!dependencies.resolve_force(td_, "update_web_page 2")) {
+        web_page->star_gifts_ = {};
       }
     }
   }
@@ -717,7 +779,8 @@ void WebPagesManager::update_web_page(unique_ptr<WebPage> web_page, WebPageId we
 
   auto new_file_ids = get_web_page_file_ids(page.get());
   if (old_file_ids != new_file_ids) {
-    td_->file_manager_->change_files_source(get_web_page_file_source_id(page.get()), old_file_ids, new_file_ids);
+    td_->file_manager_->change_files_source(get_web_page_file_source_id(page.get()), old_file_ids, new_file_ids,
+                                            "update_web_page");
   }
 
   if (is_changed && !from_database) {
@@ -918,7 +981,7 @@ void WebPagesManager::unregister_quick_reply_web_page(WebPageId web_page_id, Qui
 
 void WebPagesManager::on_get_web_page_preview(unique_ptr<GetWebPagePreviewOptions> &&options,
                                               tl_object_ptr<telegram_api::MessageMedia> &&message_media_ptr,
-                                              Promise<td_api::object_ptr<td_api::webPage>> &&promise) {
+                                              Promise<td_api::object_ptr<td_api::linkPreview>> &&promise) {
   CHECK(message_media_ptr != nullptr);
   int32 constructor_id = message_media_ptr->get_id();
   if (constructor_id != telegram_api::messageMediaWebPage::ID) {
@@ -945,7 +1008,7 @@ void WebPagesManager::on_get_web_page_preview(unique_ptr<GetWebPagePreviewOption
 
 void WebPagesManager::on_get_web_page_preview_success(unique_ptr<GetWebPagePreviewOptions> &&options,
                                                       WebPageId web_page_id,
-                                                      Promise<td_api::object_ptr<td_api::webPage>> &&promise) {
+                                                      Promise<td_api::object_ptr<td_api::linkPreview>> &&promise) {
   CHECK(web_page_id == WebPageId() || have_web_page(web_page_id));
   CHECK(options != nullptr);
   CHECK(options->link_preview_options_ != nullptr);
@@ -954,14 +1017,15 @@ void WebPagesManager::on_get_web_page_preview_success(unique_ptr<GetWebPagePrevi
     on_get_web_page_by_url(options->first_url_, web_page_id, true);
   }
 
-  promise.set_value(get_web_page_object(web_page_id, options->link_preview_options_->force_small_media_,
-                                        options->link_preview_options_->force_large_media_, options->skip_confirmation_,
-                                        options->link_preview_options_->show_above_text_));
+  promise.set_value(get_link_preview_object(web_page_id, options->link_preview_options_->force_small_media_,
+                                            options->link_preview_options_->force_large_media_,
+                                            options->skip_confirmation_,
+                                            options->link_preview_options_->show_above_text_));
 }
 
 void WebPagesManager::get_web_page_preview(td_api::object_ptr<td_api::formattedText> &&text,
                                            td_api::object_ptr<td_api::linkPreviewOptions> &&link_preview_options,
-                                           Promise<td_api::object_ptr<td_api::webPage>> &&promise) {
+                                           Promise<td_api::object_ptr<td_api::linkPreview>> &&promise) {
   TRY_RESULT_PROMISE(
       promise, formatted_text,
       get_formatted_text(td_, DialogId(), std::move(text), td_->auth_manager_->is_bot(), true, true, true));
@@ -982,9 +1046,9 @@ void WebPagesManager::get_web_page_preview(td_api::object_ptr<td_api::formattedT
   auto web_page_id = get_web_page_by_url(url);
   bool skip_confirmation = is_visible_url(formatted_text, url);
   if (web_page_id.is_valid()) {
-    return promise.set_value(get_web_page_object(web_page_id, link_preview_options->force_small_media_,
-                                                 link_preview_options->force_large_media_, skip_confirmation,
-                                                 link_preview_options->show_above_text_));
+    return promise.set_value(get_link_preview_object(web_page_id, link_preview_options->force_small_media_,
+                                                     link_preview_options->force_large_media_, skip_confirmation,
+                                                     link_preview_options->show_above_text_));
   }
   if (!link_preview_options->url_.empty()) {
     formatted_text.text = link_preview_options->url_, formatted_text.entities.clear();
@@ -1139,7 +1203,8 @@ void WebPagesManager::on_load_web_page_instant_view_from_database(WebPageId web_
 
   auto new_file_ids = get_web_page_file_ids(web_page);
   if (old_file_ids != new_file_ids) {
-    td_->file_manager_->change_files_source(get_web_page_file_source_id(web_page), old_file_ids, new_file_ids);
+    td_->file_manager_->change_files_source(get_web_page_file_source_id(web_page), old_file_ids, new_file_ids,
+                                            "on_load_web_page_instant_view_from_database");
   }
 
   update_web_page_instant_view_load_requests(web_page_id, false, web_page_id);
@@ -1332,9 +1397,426 @@ bool WebPagesManager::have_web_page(WebPageId web_page_id) const {
   return get_web_page(web_page_id) != nullptr;
 }
 
-tl_object_ptr<td_api::webPage> WebPagesManager::get_web_page_object(WebPageId web_page_id, bool force_small_media,
-                                                                    bool force_large_media, bool skip_confirmation,
-                                                                    bool invert_media) const {
+bool WebPagesManager::can_web_page_be_album(const WebPage *web_page) {
+  if (web_page->type_ == "telegram_album") {
+    return true;
+  }
+  auto site_name = to_lower(web_page->site_name_);
+  return site_name == "instagram" || site_name == "twitter" || site_name == "x";
+}
+
+bool WebPagesManager::is_web_page_album(const WebPage *web_page) {
+  if (!web_page->is_album_checked_) {
+    web_page->is_album_checked_ = true;
+    if (web_page->type_ == "telegram_album") {
+      web_page->is_album_ = true;
+    } else if (can_web_page_be_album(web_page) && !web_page->instant_view_.is_empty_) {
+      if (!web_page->instant_view_.is_loaded_) {
+        LOG(ERROR) << "Have no instant view for " << web_page->url_;
+      } else {
+        web_page->is_album_ = WebPageBlock::are_allowed_album_block_types(web_page->instant_view_.page_blocks_);
+      }
+    }
+  }
+  return web_page->is_album_;
+}
+
+td_api::object_ptr<td_api::LinkPreviewType> WebPagesManager::get_link_preview_type_album_object(
+    const WebPageInstantView &instant_view) const {
+  if (instant_view.is_empty_ || !instant_view.is_loaded_) {
+    LOG(ERROR) << "Have no instant view in Telegram album for " << instant_view.url_;
+    return td_api::make_object<td_api::linkPreviewTypeUnsupported>();
+  }
+  vector<td_api::object_ptr<td_api::LinkPreviewAlbumMedia>> media;
+  string caption_text;
+  auto process_album = [&media, &caption_text](vector<td_api::object_ptr<td_api::PageBlock>> page_blocks,
+                                               td_api::object_ptr<td_api::pageBlockCaption> caption) {
+    for (auto &block : page_blocks) {
+      switch (block->get_id()) {
+        case td_api::pageBlockPhoto::ID: {
+          auto photo = std::move(static_cast<td_api::pageBlockPhoto *>(block.get())->photo_);
+          if (photo == nullptr) {
+            LOG(ERROR) << "Receive pageBlockPhoto without photo";
+          } else {
+            media.push_back(td_api::make_object<td_api::linkPreviewAlbumMediaPhoto>(std::move(photo)));
+          }
+          break;
+        }
+        case td_api::pageBlockVideo::ID: {
+          auto video = std::move(static_cast<td_api::pageBlockVideo *>(block.get())->video_);
+          if (video == nullptr) {
+            LOG(ERROR) << "Receive pageBlockVideo without video";
+          } else {
+            media.push_back(td_api::make_object<td_api::linkPreviewAlbumMediaVideo>(std::move(video)));
+          }
+          break;
+        }
+        default:
+          LOG(ERROR) << "Receive " << to_string(block);
+          break;
+      }
+    }
+    if (caption != nullptr && caption->text_ != nullptr && caption->text_->get_id() == td_api::richTextPlain::ID) {
+      caption_text = std::move(static_cast<const td_api::richTextPlain *>(caption->text_.get())->text_);
+    } else {
+      LOG(ERROR) << "Receive instead of caption text: " << to_string(caption);
+    }
+  };
+
+  for (auto &block_object : get_page_blocks_object(instant_view.page_blocks_, td_, Slice(), Slice())) {
+    switch (block_object->get_id()) {
+      case td_api::pageBlockTitle::ID:
+      case td_api::pageBlockAuthorDate::ID:
+        break;
+      case td_api::pageBlockCollage::ID: {
+        auto *collage = static_cast<td_api::pageBlockCollage *>(block_object.get());
+        process_album(std::move(collage->page_blocks_), std::move(collage->caption_));
+        break;
+      }
+      case td_api::pageBlockSlideshow::ID: {
+        auto *collage = static_cast<td_api::pageBlockSlideshow *>(block_object.get());
+        process_album(std::move(collage->page_blocks_), std::move(collage->caption_));
+        break;
+      }
+      default:
+        LOG(ERROR) << "Receive " << to_string(block_object);
+        break;
+    }
+  }
+  if (!media.empty()) {
+    return td_api::make_object<td_api::linkPreviewTypeAlbum>(std::move(media), caption_text);
+  }
+  LOG(ERROR) << "Have no media in Telegram album for " << instant_view.url_;
+  return td_api::make_object<td_api::linkPreviewTypeUnsupported>();
+}
+
+td_api::object_ptr<td_api::LinkPreviewType> WebPagesManager::get_link_preview_type_object(
+    const WebPage *web_page) const {
+  if (is_web_page_album(web_page)) {
+    return get_link_preview_type_album_object(web_page->instant_view_);
+  }
+  if (begins_with(web_page->type_, "telegram_")) {
+    Slice type = Slice(web_page->type_).substr(9);
+    if (type == "background") {
+      LOG_IF(ERROR, !web_page->photo_.is_empty()) << "Receive photo for " << web_page->url_;
+      LOG_IF(ERROR,
+             web_page->document_.type != Document::Type::Unknown && web_page->document_.type != Document::Type::General)
+          << "Receive wrong document for " << web_page->url_;
+      bool is_pattern = false;
+      if (web_page->document_.type == Document::Type::General) {
+        auto mime_type = td_->documents_manager_->get_document_mime_type(web_page->document_.file_id);
+        is_pattern = mime_type == "image/png" || mime_type == "application/x-tgwallpattern";
+      }
+      return td_api::make_object<td_api::linkPreviewTypeBackground>(
+          web_page->document_.type == Document::Type::General
+              ? td_->documents_manager_->get_document_object(web_page->document_.file_id, PhotoFormat::Png)
+              : nullptr,
+          LinkManager::get_background_type_object(web_page->url_, is_pattern));
+    }
+    if (type == "bot") {
+      LOG_IF(ERROR, web_page->document_.type != Document::Type::Unknown)
+          << "Receive wrong document for " << web_page->url_;
+      return td_api::make_object<td_api::linkPreviewTypeUser>(
+          get_chat_photo_object(td_->file_manager_.get(), web_page->photo_), true);
+    }
+    if (type == "botapp") {
+      LOG_IF(ERROR, web_page->document_.type != Document::Type::Unknown)
+          << "Receive wrong document for " << web_page->url_;
+      return td_api::make_object<td_api::linkPreviewTypeWebApp>(
+          get_photo_object(td_->file_manager_.get(), web_page->photo_));
+    }
+    if (type == "channel" || type == "channel_request") {
+      LOG_IF(ERROR, web_page->document_.type != Document::Type::Unknown)
+          << "Receive wrong document for " << web_page->url_;
+      return td_api::make_object<td_api::linkPreviewTypeChat>(
+          td_api::make_object<td_api::inviteLinkChatTypeChannel>(),
+          get_chat_photo_object(td_->file_manager_.get(), web_page->photo_), type.size() > 10);
+    }
+    if (type == "channel_boost") {
+      LOG_IF(ERROR, web_page->document_.type != Document::Type::Unknown)
+          << "Receive wrong document for " << web_page->url_;
+      return td_api::make_object<td_api::linkPreviewTypeChannelBoost>(
+          get_chat_photo_object(td_->file_manager_.get(), web_page->photo_));
+    }
+    if (type == "chat" || type == "chat_request") {
+      LOG_IF(ERROR, web_page->document_.type != Document::Type::Unknown)
+          << "Receive wrong document for " << web_page->url_;
+      return td_api::make_object<td_api::linkPreviewTypeChat>(
+          td_api::make_object<td_api::inviteLinkChatTypeBasicGroup>(),
+          get_chat_photo_object(td_->file_manager_.get(), web_page->photo_), type.size() > 10);
+    }
+    if (type == "chatlist") {
+      LOG_IF(ERROR, !web_page->photo_.is_empty()) << "Receive photo for " << web_page->url_;
+      LOG_IF(ERROR, web_page->document_.type != Document::Type::Unknown)
+          << "Receive wrong document for " << web_page->url_;
+      return td_api::make_object<td_api::linkPreviewTypeShareableChatFolder>();
+    }
+    if (type == "giftcode") {
+      LOG_IF(ERROR, !web_page->photo_.is_empty()) << "Receive photo for " << web_page->url_;
+      LOG_IF(ERROR, web_page->document_.type != Document::Type::Unknown)
+          << "Receive wrong document for " << web_page->url_;
+      return td_api::make_object<td_api::linkPreviewTypePremiumGiftCode>();
+    }
+    if (type == "group_boost") {
+      LOG_IF(ERROR, web_page->document_.type != Document::Type::Unknown)
+          << "Receive wrong document for " << web_page->url_;
+      return td_api::make_object<td_api::linkPreviewTypeSupergroupBoost>(
+          get_chat_photo_object(td_->file_manager_.get(), web_page->photo_));
+    }
+    if (type == "invoice") {
+      LOG_IF(ERROR, !web_page->photo_.is_empty()) << "Receive photo for " << web_page->url_;
+      LOG_IF(ERROR, web_page->document_.type != Document::Type::Unknown)
+          << "Receive wrong document for " << web_page->url_;
+      return td_api::make_object<td_api::linkPreviewTypeInvoice>();
+    }
+    if (type == "livestream") {
+      LOG_IF(ERROR, web_page->document_.type != Document::Type::Unknown)
+          << "Receive wrong document for " << web_page->url_;
+      return td_api::make_object<td_api::linkPreviewTypeVideoChat>(
+          get_chat_photo_object(td_->file_manager_.get(), web_page->photo_), true);
+    }
+    if (type == "megagroup" || type == "megagroup_request") {
+      LOG_IF(ERROR, web_page->document_.type != Document::Type::Unknown)
+          << "Receive wrong document for " << web_page->url_;
+      return td_api::make_object<td_api::linkPreviewTypeChat>(
+          td_api::make_object<td_api::inviteLinkChatTypeSupergroup>(),
+          get_chat_photo_object(td_->file_manager_.get(), web_page->photo_), type.size() > 10);
+    }
+    if (type == "message") {
+      LOG_IF(ERROR, !web_page->photo_.is_empty()) << "Receive photo for " << web_page->url_;
+      LOG_IF(ERROR, web_page->document_.type != Document::Type::Unknown)
+          << "Receive wrong document for " << web_page->url_;
+      return td_api::make_object<td_api::linkPreviewTypeMessage>();
+    }
+    if (type == "nft") {
+      if (web_page->star_gifts_.size() == 1) {
+        return td_api::make_object<td_api::linkPreviewTypeUpgradedGift>(
+            web_page->star_gifts_[0].get_upgraded_gift_object(td_));
+      } else {
+        LOG(ERROR) << "Receive upgraded gift " << web_page->url_ << " without the gift";
+        return td_api::make_object<td_api::linkPreviewTypeUnsupported>();
+      }
+    }
+    if (type == "stickerset") {
+      LOG_IF(ERROR, !web_page->photo_.is_empty()) << "Receive photo for " << web_page->url_;
+      auto stickers = transform(web_page->sticker_ids_, [&](FileId sticker_id) {
+        return td_->stickers_manager_->get_sticker_object(sticker_id);
+      });
+      return td_api::make_object<td_api::linkPreviewTypeStickerSet>(std::move(stickers));
+    }
+    if (type == "story") {
+      DialogId story_sender_dialog_id;
+      StoryId story_id;
+      if (web_page->story_full_ids_.size() == 1) {
+        story_sender_dialog_id = web_page->story_full_ids_[0].get_dialog_id();
+        story_id = web_page->story_full_ids_[0].get_story_id();
+        return td_api::make_object<td_api::linkPreviewTypeStory>(
+            td_->dialog_manager_->get_chat_id_object(story_sender_dialog_id, "webPage"), story_id.get());
+      } else {
+        LOG(ERROR) << "Receive Telegram story " << web_page->url_ << " without story";
+        return td_api::make_object<td_api::linkPreviewTypeUnsupported>();
+      }
+    }
+    if (type == "theme") {
+      LOG_IF(ERROR, !web_page->photo_.is_empty()) << "Receive photo for " << web_page->url_;
+      vector<td_api::object_ptr<td_api::document>> documents;
+      for (auto &document : web_page->documents_) {
+        if (document.type == Document::Type::General) {
+          documents.push_back(td_->documents_manager_->get_document_object(document.file_id, PhotoFormat::Jpeg));
+        }
+      }
+      auto theme_settings =
+          !web_page->theme_settings_.is_empty() ? web_page->theme_settings_.get_theme_settings_object(td_) : nullptr;
+      return td_api::make_object<td_api::linkPreviewTypeTheme>(std::move(documents), std::move(theme_settings));
+    }
+    if (type == "user") {
+      LOG_IF(ERROR, web_page->document_.type != Document::Type::Unknown)
+          << "Receive wrong document for " << web_page->url_;
+      return td_api::make_object<td_api::linkPreviewTypeUser>(
+          get_chat_photo_object(td_->file_manager_.get(), web_page->photo_), false);
+    }
+    if (type == "videochat") {
+      LOG_IF(ERROR, web_page->document_.type != Document::Type::Unknown)
+          << "Receive wrong document for " << web_page->url_;
+      return td_api::make_object<td_api::linkPreviewTypeVideoChat>(
+          get_chat_photo_object(td_->file_manager_.get(), web_page->photo_), false);
+    }
+  }
+  if (!web_page->embed_type_.empty() || !web_page->embed_url_.empty()) {
+    if (web_page->embed_type_ == "iframe") {
+      if (web_page->type_ == "audio") {
+        return td_api::make_object<td_api::linkPreviewTypeEmbeddedAudioPlayer>(
+            web_page->embed_url_, get_photo_object(td_->file_manager_.get(), web_page->photo_), web_page->duration_,
+            web_page->embed_dimensions_.width, web_page->embed_dimensions_.height);
+      }
+      if (web_page->type_ == "gif") {
+        return td_api::make_object<td_api::linkPreviewTypeEmbeddedAnimationPlayer>(
+            web_page->embed_url_, get_photo_object(td_->file_manager_.get(), web_page->photo_), web_page->duration_,
+            web_page->embed_dimensions_.width, web_page->embed_dimensions_.height);
+      }
+      if (web_page->type_ == "video") {
+        return td_api::make_object<td_api::linkPreviewTypeEmbeddedVideoPlayer>(
+            web_page->embed_url_, get_photo_object(td_->file_manager_.get(), web_page->photo_), web_page->duration_,
+            web_page->embed_dimensions_.width, web_page->embed_dimensions_.height);
+      }
+    } else {
+      // ordinary animation/audio/video
+      if (web_page->type_ == "audio") {
+        LOG_IF(ERROR,
+               web_page->document_.type != Document::Type::Unknown && web_page->document_.type != Document::Type::Audio)
+            << "Receive wrong document for " << web_page->url_;
+        auto audio = web_page->document_.type == Document::Type::Audio
+                         ? td_->audios_manager_->get_audio_object(web_page->document_.file_id)
+                         : nullptr;
+        if (audio != nullptr) {
+          return td_api::make_object<td_api::linkPreviewTypeAudio>(std::move(audio));
+        } else if (!web_page->embed_url_.empty()) {
+          return td_api::make_object<td_api::linkPreviewTypeExternalAudio>(web_page->embed_url_, web_page->embed_type_,
+                                                                           web_page->duration_);
+        } else {
+          if (!web_page->photo_.is_empty()) {
+            return td_api::make_object<td_api::linkPreviewTypePhoto>(
+                get_photo_object(td_->file_manager_.get(), web_page->photo_));
+          }
+          return td_api::make_object<td_api::linkPreviewTypeUnsupported>();
+        }
+      }
+      if (web_page->type_ == "gif") {
+        LOG_IF(ERROR, web_page->document_.type != Document::Type::Unknown &&
+                          web_page->document_.type != Document::Type::Animation)
+            << "Receive wrong document for " << web_page->url_;
+        auto animation = web_page->document_.type == Document::Type::Animation
+                             ? td_->animations_manager_->get_animation_object(web_page->document_.file_id)
+                             : nullptr;
+        if (animation != nullptr) {
+          return td_api::make_object<td_api::linkPreviewTypeAnimation>(std::move(animation));
+        } else {
+          if (!web_page->photo_.is_empty()) {
+            return td_api::make_object<td_api::linkPreviewTypePhoto>(
+                get_photo_object(td_->file_manager_.get(), web_page->photo_));
+          }
+          return td_api::make_object<td_api::linkPreviewTypeUnsupported>();
+        }
+      }
+      if (web_page->type_ == "video") {
+        LOG_IF(ERROR,
+               web_page->document_.type != Document::Type::Unknown && web_page->document_.type != Document::Type::Video)
+            << "Receive wrong document for " << web_page->url_;
+        auto video = web_page->document_.type == Document::Type::Video
+                         ? td_->videos_manager_->get_video_object(web_page->document_.file_id)
+                         : nullptr;
+        if (video != nullptr) {
+          return td_api::make_object<td_api::linkPreviewTypeVideo>(std::move(video));
+        } else if (!web_page->embed_url_.empty()) {
+          return td_api::make_object<td_api::linkPreviewTypeExternalVideo>(
+              web_page->embed_url_, web_page->embed_type_, web_page->embed_dimensions_.width,
+              web_page->embed_dimensions_.height, web_page->duration_);
+        } else {
+          if (!web_page->photo_.is_empty()) {
+            return td_api::make_object<td_api::linkPreviewTypePhoto>(
+                get_photo_object(td_->file_manager_.get(), web_page->photo_));
+          }
+          return td_api::make_object<td_api::linkPreviewTypeUnsupported>();
+        }
+      }
+    }
+    LOG(ERROR) << "Have type = " << web_page->type_ << " for embedded " << web_page->url_;
+    return td_api::make_object<td_api::linkPreviewTypeUnsupported>();
+  }
+  bool is_generic = web_page->type_ == "document" || web_page->type_ == "article";
+  if (web_page->type_ == "app") {
+    LOG_IF(ERROR, web_page->document_.type != Document::Type::Unknown)
+        << "Receive wrong document for " << web_page->url_;
+    return td_api::make_object<td_api::linkPreviewTypeApp>(
+        get_photo_object(td_->file_manager_.get(), web_page->photo_));
+  }
+  if (web_page->type_ == "audio" || (web_page->document_.type == Document::Type::Audio && is_generic)) {
+    LOG_IF(ERROR, !web_page->photo_.is_empty()) << "Receive photo for " << web_page->url_;
+    auto audio = web_page->document_.type == Document::Type::Audio
+                     ? td_->audios_manager_->get_audio_object(web_page->document_.file_id)
+                     : nullptr;
+    if (audio != nullptr) {
+      return td_api::make_object<td_api::linkPreviewTypeAudio>(std::move(audio));
+    } else {
+      LOG(ERROR) << "Receive audio without audio for " << web_page->url_;
+      return td_api::make_object<td_api::linkPreviewTypeUnsupported>();
+    }
+  }
+  if (web_page->document_.type == Document::Type::General && is_generic) {
+    LOG_IF(ERROR, !web_page->photo_.is_empty()) << "Receive photo for " << web_page->url_;
+    auto document = td_->documents_manager_->get_document_object(web_page->document_.file_id, PhotoFormat::Jpeg);
+    return td_api::make_object<td_api::linkPreviewTypeDocument>(std::move(document));
+  }
+  if (web_page->type_ == "gif" || (web_page->document_.type == Document::Type::Animation && is_generic)) {
+    auto animation = web_page->document_.type == Document::Type::Animation
+                         ? td_->animations_manager_->get_animation_object(web_page->document_.file_id)
+                         : nullptr;
+    if (animation != nullptr) {
+      return td_api::make_object<td_api::linkPreviewTypeAnimation>(std::move(animation));
+    } else {
+      if (!web_page->photo_.is_empty()) {
+        return td_api::make_object<td_api::linkPreviewTypePhoto>(
+            get_photo_object(td_->file_manager_.get(), web_page->photo_));
+      }
+      LOG(ERROR) << "Receive animation without animation for " << web_page->url_;
+      return td_api::make_object<td_api::linkPreviewTypeUnsupported>();
+    }
+  }
+  if (web_page->type_ == "photo" ||
+      (is_generic && web_page->document_.type == Document::Type::Unknown && !web_page->photo_.is_empty())) {
+    LOG_IF(ERROR, web_page->document_.type != Document::Type::Unknown)
+        << "Receive wrong document for " << web_page->url_;
+    auto photo = get_photo_object(td_->file_manager_.get(), web_page->photo_);
+    if (photo != nullptr) {
+      return td_api::make_object<td_api::linkPreviewTypePhoto>(std::move(photo));
+    } else {
+      LOG(ERROR) << "Receive photo without photo for " << web_page->url_;
+      return td_api::make_object<td_api::linkPreviewTypeUnsupported>();
+    }
+  }
+  if (web_page->document_.type == Document::Type::Sticker && is_generic) {
+    auto sticker = td_->stickers_manager_->get_sticker_object(web_page->document_.file_id);
+    return td_api::make_object<td_api::linkPreviewTypeSticker>(std::move(sticker));
+  }
+  if (web_page->type_ == "video" || (web_page->document_.type == Document::Type::Video && is_generic)) {
+    auto video = web_page->document_.type == Document::Type::Video
+                     ? td_->videos_manager_->get_video_object(web_page->document_.file_id)
+                     : nullptr;
+    if (video != nullptr) {
+      return td_api::make_object<td_api::linkPreviewTypeVideo>(std::move(video));
+    } else {
+      if (!web_page->photo_.is_empty()) {
+        return td_api::make_object<td_api::linkPreviewTypePhoto>(
+            get_photo_object(td_->file_manager_.get(), web_page->photo_));
+      }
+      return td_api::make_object<td_api::linkPreviewTypeExternalVideo>(web_page->url_, "video/mp4", 0, 0,
+                                                                       web_page->duration_);
+    }
+  }
+  if (web_page->document_.type == Document::Type::VideoNote && is_generic) {
+    LOG_IF(ERROR, !web_page->photo_.is_empty()) << "Receive photo for " << web_page->url_;
+    auto video_note = td_->video_notes_manager_->get_video_note_object(web_page->document_.file_id);
+    return td_api::make_object<td_api::linkPreviewTypeVideoNote>(std::move(video_note));
+  }
+  if (web_page->document_.type == Document::Type::VoiceNote && is_generic) {
+    LOG_IF(ERROR, !web_page->photo_.is_empty()) << "Receive photo for " << web_page->url_;
+    auto voice_note = td_->voice_notes_manager_->get_voice_note_object(web_page->document_.file_id);
+    return td_api::make_object<td_api::linkPreviewTypeVoiceNote>(std::move(voice_note));
+  }
+  if (web_page->type_ == "article") {
+    return td_api::make_object<td_api::linkPreviewTypeArticle>(
+        get_photo_object(td_->file_manager_.get(), web_page->photo_));
+  }
+
+  LOG(ERROR) << "Receive link preview of unsupported type " << web_page->type_;
+  return td_api::make_object<td_api::linkPreviewTypeUnsupported>();
+}
+
+td_api::object_ptr<td_api::linkPreview> WebPagesManager::get_link_preview_object(WebPageId web_page_id,
+                                                                                 bool force_small_media,
+                                                                                 bool force_large_media,
+                                                                                 bool skip_confirmation,
+                                                                                 bool invert_media) const {
   if (!web_page_id.is_valid()) {
     return nullptr;
   }
@@ -1343,7 +1825,7 @@ tl_object_ptr<td_api::webPage> WebPagesManager::get_web_page_object(WebPageId we
     return nullptr;
   }
   int32 instant_view_version = [web_page] {
-    if (web_page->instant_view_.is_empty_) {
+    if (web_page->instant_view_.is_empty_ || is_web_page_album(web_page)) {
       return 0;
     }
     if (web_page->instant_view_.is_v2_) {
@@ -1427,12 +1909,6 @@ tl_object_ptr<td_api::webPage> WebPagesManager::get_web_page_object(WebPageId we
   }
 
   auto duration = get_web_page_media_duration(web_page);
-  DialogId story_sender_dialog_id;
-  StoryId story_id;
-  if (web_page->story_full_ids_.size() == 1) {
-    story_sender_dialog_id = web_page->story_full_ids_[0].get_dialog_id();
-    story_id = web_page->story_full_ids_[0].get_story_id();
-  }
   auto show_large_media = [&] {
     if (web_page->document_.type == Document::Type::Audio || web_page->document_.type == Document::Type::VoiceNote ||
         web_page->document_.type == Document::Type::General) {
@@ -1467,40 +1943,30 @@ tl_object_ptr<td_api::webPage> WebPagesManager::get_web_page_object(WebPageId we
     }
     return false;
   }();
-  auto stickers = transform(web_page->sticker_ids_,
-                            [&](FileId sticker_id) { return td_->stickers_manager_->get_sticker_object(sticker_id); });
-  return td_api::make_object<td_api::webPage>(
-      web_page->url_, web_page->display_url_, web_page->type_, web_page->site_name_, web_page->title_,
-      get_formatted_text_object(description, true, duration == 0 ? std::numeric_limits<int32>::max() : duration),
-      get_photo_object(td_->file_manager_.get(), web_page->photo_), web_page->embed_url_, web_page->embed_type_,
-      web_page->embed_dimensions_.width, web_page->embed_dimensions_.height, web_page->duration_, web_page->author_,
-      web_page->has_large_media_, show_large_media, skip_confirmation, invert_media,
-      web_page->document_.type == Document::Type::Animation
-          ? td_->animations_manager_->get_animation_object(web_page->document_.file_id)
-          : nullptr,
-      web_page->document_.type == Document::Type::Audio
-          ? td_->audios_manager_->get_audio_object(web_page->document_.file_id)
-          : nullptr,
-      web_page->document_.type == Document::Type::General
-          ? td_->documents_manager_->get_document_object(web_page->document_.file_id, PhotoFormat::Jpeg)
-          : nullptr,
-      web_page->document_.type == Document::Type::Sticker
-          ? td_->stickers_manager_->get_sticker_object(web_page->document_.file_id)
-          : nullptr,
-      web_page->document_.type == Document::Type::Video
-          ? td_->videos_manager_->get_video_object(web_page->document_.file_id)
-          : nullptr,
-      web_page->document_.type == Document::Type::VideoNote
-          ? td_->video_notes_manager_->get_video_note_object(web_page->document_.file_id)
-          : nullptr,
-      web_page->document_.type == Document::Type::VoiceNote
-          ? td_->voice_notes_manager_->get_voice_note_object(web_page->document_.file_id)
-          : nullptr,
-      td_->dialog_manager_->get_chat_id_object(story_sender_dialog_id, "webPage"), story_id.get(), std::move(stickers),
-      instant_view_version);
+  auto link_preview_type = get_link_preview_type_object(web_page);
+  bool show_media_above_description = false;
+  if (show_large_media) {
+    auto type_id = link_preview_type->get_id();
+    if (!web_page->embed_url_.empty() || type_id == td_api::linkPreviewTypeStory::ID) {
+      show_media_above_description = true;
+    } else if (type_id == td_api::linkPreviewTypeAlbum::ID ||
+               (type_id == td_api::linkPreviewTypePhoto::ID && instant_view_version > 0)) {
+      for (auto &photo_size : web_page->photo_.photos) {
+        if (photo_size.dimensions.width >= 256) {
+          show_media_above_description = true;
+        }
+      }
+    }
+  }
+  return td_api::make_object<td_api::linkPreview>(
+      web_page->url_, web_page->display_url_, web_page->site_name_, web_page->title_,
+      get_formatted_text_object(td_->user_manager_.get(), description, true,
+                                duration == 0 ? std::numeric_limits<int32>::max() : duration),
+      web_page->author_, std::move(link_preview_type), web_page->has_large_media_, show_large_media,
+      show_media_above_description, skip_confirmation, invert_media, instant_view_version);
 }
 
-tl_object_ptr<td_api::webPageInstantView> WebPagesManager::get_web_page_instant_view_object(
+td_api::object_ptr<td_api::webPageInstantView> WebPagesManager::get_web_page_instant_view_object(
     WebPageId web_page_id) const {
   const WebPage *web_page = get_web_page(web_page_id);
   if (web_page == nullptr || web_page->instant_view_.is_empty_) {
@@ -1509,7 +1975,7 @@ tl_object_ptr<td_api::webPageInstantView> WebPagesManager::get_web_page_instant_
   return get_web_page_instant_view_object(web_page_id, &web_page->instant_view_, web_page->url_);
 }
 
-tl_object_ptr<td_api::webPageInstantView> WebPagesManager::get_web_page_instant_view_object(
+td_api::object_ptr<td_api::webPageInstantView> WebPagesManager::get_web_page_instant_view_object(
     WebPageId web_page_id, const WebPageInstantView *web_page_instant_view, Slice web_page_url) const {
   if (web_page_instant_view == nullptr) {
     return nullptr;
@@ -1724,7 +2190,7 @@ void WebPagesManager::on_get_web_page_instant_view(WebPage *web_page, tl_object_
     if (document_ptr->get_id() == telegram_api::document::ID) {
       auto document = move_tl_object_as<telegram_api::document>(document_ptr);
       auto document_id = document->id_;
-      auto parsed_document = td_->documents_manager_->on_get_document(std::move(document), owner_dialog_id);
+      auto parsed_document = td_->documents_manager_->on_get_document(std::move(document), owner_dialog_id, false);
       if (!parsed_document.empty() && document_id != 0) {
         get_map(parsed_document.type)->emplace(document_id, parsed_document.file_id);
       }
@@ -1737,8 +2203,9 @@ void WebPagesManager::on_get_web_page_instant_view(WebPage *web_page, tl_object_
 
   auto add_document = [&](const Document &document) {
     auto file_view = td_->file_manager_->get_file_view(document.file_id);
-    if (file_view.has_remote_location()) {
-      auto document_id = file_view.remote_location().get_id();
+    const auto *full_remote_location = file_view.get_full_remote_location();
+    if (full_remote_location != nullptr) {
+      auto document_id = full_remote_location->get_id();
       if (document_id != 0) {
         get_map(document.type)->emplace(document_id, document.file_id);
       } else {
@@ -1926,6 +2393,15 @@ void WebPagesManager::on_load_web_page_from_database(WebPageId web_page_id, stri
                    << ", value = " << format::as_hex_dump<4>(Slice(value));
       } else {
         update_web_page(std::move(result), web_page_id, true, true);
+
+        const WebPage *web_page = get_web_page(web_page_id);
+        if (web_page != nullptr && can_web_page_be_album(web_page) && !web_page->instant_view_.is_empty_ &&
+            !web_page->instant_view_.is_loaded_) {
+          LOG(INFO) << "Forcely load instant view of " << web_page_id;
+          on_load_web_page_instant_view_from_database(
+              web_page_id,
+              G()->td_db()->get_sqlite_sync_pmc()->get(get_web_page_instant_view_database_key(web_page_id)));
+        }
       }
     }
   } else {
@@ -2082,6 +2558,7 @@ vector<FileId> WebPagesManager::get_web_page_file_ids(const WebPage *web_page) c
       page_block->append_file_ids(td_, result);
     }
   }
+  // don't need to return gift file identifiers
   return result;
 }
 

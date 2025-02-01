@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2024
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -305,8 +305,12 @@ Result<FullLocalLocationInfo> check_full_local_location(FullLocalLocationInfo lo
     return Status::Error(400, "File must be non-empty");
   }
 
-  if (size == 0) {
+  if (size <= 0) {
     size = stat.size_;
+  } else if (size != stat.size_) {
+    VLOG(file_loader) << "File \"" << location.path_ << "\" was modified: old size = " << size
+                      << ", new size = " << stat.size_;
+    return Status::Error(400, "File size has changed");
   }
   if (location.mtime_nsec_ == 0) {
     VLOG(file_loader) << "Set file \"" << location.path_ << "\" modification time to " << stat.mtime_nsec_;
@@ -335,7 +339,7 @@ Result<FullLocalLocationInfo> check_full_local_location(FullLocalLocationInfo lo
   if (get_file_type_class(location.file_type_) == FileTypeClass::Photo && size > MAX_PHOTO_SIZE) {
     return get_file_size_error(" for a photo");
   }
-  if (location.file_type_ == FileType::VideoNote &&
+  if ((location.file_type_ == FileType::VideoNote || location.file_type_ == FileType::SelfDestructingVideoNote) &&
       size > G()->get_option_integer("video_note_size_max", DEFAULT_VIDEO_NOTE_SIZE_MAX)) {
     return get_file_size_error(" for a video note");
   }
@@ -353,7 +357,7 @@ Status check_partial_local_location(const PartialLocalFileLocation &location) {
     }
     return Status::Error("File must be a regular file");
   }
-  // can't check mtime. Hope nobody will mess with this files in our temporary dir.
+  // can't check mtime. Hope nobody will mess with the file in our temporary directory
   return Status::OK();
 }
 

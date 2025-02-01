@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2024
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -37,7 +37,8 @@ class SponsoredMessageManager final : public Actor {
 
   void view_sponsored_message(DialogId dialog_id, MessageId sponsored_message_id);
 
-  void click_sponsored_message(DialogId dialog_id, MessageId sponsored_message_id, Promise<Unit> &&promise);
+  void click_sponsored_message(DialogId dialog_id, MessageId sponsored_message_id, bool is_media_click,
+                               bool from_fullscreen, Promise<Unit> &&promise);
 
   void report_sponsored_message(DialogId dialog_id, MessageId sponsored_message_id, const string &option_id,
                                 Promise<td_api::object_ptr<td_api::ReportChatSponsoredMessageResult>> &&promise);

@@ -1,5 +1,5 @@
 //
-// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2024
+// Copyright Aliaksei Levin (levlam@telegram.org), Arseny Smirnov (arseny30@gmail.com) 2014-2025
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -229,7 +229,7 @@ Result<BufferSlice> SecretChatActor::create_encrypted_message(int32 my_in_seq_no
 }
 
 void SecretChatActor::send_message(tl_object_ptr<secret_api::DecryptedMessage> message,
-                                   tl_object_ptr<telegram_api::InputEncryptedFile> file, Promise<> promise) {
+                                   telegram_api::object_ptr<telegram_api::InputEncryptedFile> file, Promise<> promise) {
   if (close_flag_) {
     promise.set_error(Status::Error(400, "Chat is closed"));
     return;
@@ -238,7 +238,7 @@ void SecretChatActor::send_message(tl_object_ptr<secret_api::DecryptedMessage> m
 }
 
 void SecretChatActor::send_message_impl(tl_object_ptr<secret_api::DecryptedMessage> message,
-                                        tl_object_ptr<telegram_api::InputEncryptedFile> file, int32 flags,
+                                        telegram_api::object_ptr<telegram_api::InputEncryptedFile> file, int32 flags,
                                         Promise<> promise) {
   if (close_flag_) {
     promise.set_error(Status::Error(400, "Chat is closed"));
@@ -1310,7 +1310,7 @@ Status SecretChatActor::do_inbound_message_decrypted(unique_ptr<log_event::Inbou
     state.message_id = message->message_id;
     TRY_STATUS(on_inbound_action(*action, message->message_id));
   } else {
-    LOG(ERROR) << "INGORE MESSAGE: " << to_string(message->decrypted_message_layer);
+    LOG(ERROR) << "IGNORE MESSAGE: " << to_string(message->decrypted_message_layer);
     save_message_finish.set_value(Unit());
   }
 
